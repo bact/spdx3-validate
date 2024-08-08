@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
-import rdflib
-import urllib.request
 import json
 import jsonschema
 import pyshacl
+import rdflib
+import sys
 import textwrap
+import urllib.request
 
 from rdflib import RDF, RDFS, SH, URIRef
 
@@ -247,7 +248,7 @@ def main(cmdline_args=None):
     for j in args.json:
         s = read_location(j)
         d = json.loads(s)
-        if not "@context" in d:
+        if "@context" not in d:
             print(f"No @context found in {j}")
             return 1
 
@@ -312,7 +313,7 @@ def main(cmdline_args=None):
 
             e = check_graph(g, shacl_graph, current_version, False)
             if e:
-                print(f"ERROR: SHACL Validation failed on merged files:")
+                print("ERROR: SHACL Validation failed on merged files:")
                 print("\n".join(e))
                 errors += 1
         else:
