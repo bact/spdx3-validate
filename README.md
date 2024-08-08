@@ -18,6 +18,23 @@ useful. This includes:
 
 ## Installation
 
+`spdx3-validate` can be installed using `pip`:
+
+```shell
+python3 -m pip install spdx3-validate
+```
+
+## Developing
+
+Developing on `spdx3-validate` is best done using a virtual environment. You
+can configure one and install spdx3-validate in editable mode with all
+necessary development dependencies by running:
+
+```shell
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[dev]"
+```
 
 ## TODO
 
