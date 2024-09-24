@@ -18,6 +18,13 @@ SPDX_VERSIONS = (
         "3.0.0",
         "https://spdx.org/rdf/3.0.0/terms/",
     ),
+    SpdxVersion(
+        "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+        "https://spdx.org/rdf/3.0.1/spdx-model.ttl",
+        "https://spdx.org/schema/3.0.1/spdx-json-schema.json",
+        "3.0.1",
+        "https://spdx.org/rdf/3.0.1/terms/",
+    )
 )
 
 
