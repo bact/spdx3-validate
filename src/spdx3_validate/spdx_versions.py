@@ -24,7 +24,7 @@ SPDX_VERSIONS = (
         "https://spdx.org/schema/3.0.1/spdx-json-schema.json",
         "3.0.1",
         "https://spdx.org/rdf/3.0.1/terms/",
-    )
+    ),
 )
 
 
