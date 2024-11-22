@@ -6,6 +6,7 @@ dependencies = [
     "rdflib >= 7.0.0",
     "jsonschema >= 4.21.1",
     "pyshacl >= 0.25.0",
+    "halo >= 0.0.31",
 ]
 requires-python = ">= 3.8"
 authors = [

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import halo
 import json
 import jsonschema
 import pyshacl
@@ -223,6 +224,12 @@ def main(cmdline_args=None):
         dest="check_merged",
         help="Do not validate merged documents",
     )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Run quietly (do not show progress)",
+    )
     args = parser.parse_args(cmdline_args)
 
     if args.spdx_version != "auto":
@@ -238,60 +245,83 @@ def main(cmdline_args=None):
 
     files = []
     for j in args.json:
-        s = read_location(j)
-        d = json.loads(s)
-        if "@context" not in d:
-            print(f"No @context found in {j}")
-            return 1
+        with halo.Halo(f"Loading {j}", enabled=not args.quiet) as spinner:
+            s = read_location(j)
+            d = json.loads(s)
+            if "@context" not in d:
+                spinner.fail()
+                print(f"No @context found in {j}")
+                return 1
 
-        version = find_version(d["@context"])
-        if version is None:
-            print(f"{j} has unknown version @context {d['@context']}")
-            return 1
+            version = find_version(d["@context"])
+            if version is None:
+                spinner.fail()
+                print(f"{j} has unknown version @context {d['@context']}")
+                return 1
 
-        if current_version is None:
-            current_version = version
-        elif current_version != version:
-            print(
-                f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
-            )
-            return 1
+            if current_version is None:
+                current_version = version
+            elif current_version != version:
+                spinner.fail()
+                print(
+                    f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
+                )
+                return 1
 
-        graph = rdflib.Graph()
-        graph.parse(data=s, format="json-ld")
+            graph = rdflib.Graph()
+            graph.parse(data=s, format="json-ld")
 
-        files.append((j, d, graph))
+            files.append((j, d, graph))
+            spinner.succeed()
 
     if not files:
         # Nothing to do
         return 0
 
-    with urllib.request.urlopen(current_version.schema_url) as f:
-        schema = json.load(f)
+    with halo.Halo(
+        f"Loading SPDX {current_version.pretty}", enabled=not args.quiet
+    ) as spinner:
+        with urllib.request.urlopen(current_version.schema_url) as f:
+            schema = json.load(f)
 
-    shacl_graph = rdflib.Graph()
-    shacl_graph.parse(current_version.shacl_url)
+        shacl_graph = rdflib.Graph()
+        shacl_graph.parse(current_version.shacl_url)
+        spinner.succeed()
 
     errors = 0
 
     for fn, json_data, g in files:
-        validator_cls = jsonschema.validators.validator_for(schema)
+        with halo.Halo(
+            f"Validating schema for {fn}", enabled=not args.quiet
+        ) as spinner:
+            validator_cls = jsonschema.validators.validator_for(schema)
 
-        try:
-            validator_cls.check_schema(schema)
-        except jsonschema.exceptions.SchemaError as e:
-            print(f"Invalid schema {current_version.schema_url}: {e}")
-            return 1
+            try:
+                validator_cls.check_schema(schema)
+            except jsonschema.exceptions.SchemaError as e:
+                spinner.fail(f"Invalid schema {current_version.schema_url}: {e}")
+                return 1
 
-        validator = validator_cls(schema)
-        json_errors = list(validator.iter_errors(json_data))
+            validator = validator_cls(schema)
+            json_errors = list(validator.iter_errors(json_data))
+            if json_errors:
+                spinner.fail()
+            else:
+                spinner.succeed()
+
         if json_errors:
             print(f"ERROR: JSON Schema validation failed for {fn}:")
             for e in json_errors:
                 print_schema_error(e, fn)
                 errors += 1
 
-        e = check_graph(g, shacl_graph, current_version, True)
+        with halo.Halo(f"Checking SHACL for {fn}", enabled=not args.quiet) as spinner:
+            e = check_graph(g, shacl_graph, current_version, True)
+            if e:
+                spinner.fail()
+            else:
+                spinner.succeed()
+
         if e:
             print(f"ERROR: SHACL Validation failed for {fn}:")
             print("\n".join(e))
@@ -299,11 +329,17 @@ def main(cmdline_args=None):
 
     if len(files) > 1 and args.check_merged:
         if not errors:
-            merged_g = rdflib.Graph()
-            for _, _, g in files:
-                merged_g += g
+            with halo.Halo("Checking merged graph", enabled=not args.quiet) as spinner:
+                merged_g = rdflib.Graph()
+                for _, _, g in files:
+                    merged_g += g
 
-            e = check_graph(g, shacl_graph, current_version, False)
+                e = check_graph(g, shacl_graph, current_version, False)
+                if e:
+                    spinner.fail()
+                else:
+                    spinner.succeed()
+
             if e:
                 print("ERROR: SHACL Validation failed on merged files:")
                 print("\n".join(e))
