@@ -63,25 +63,17 @@ def check_graph(graph, shacl_graph, current_version, error_external):
 
         # Collect all external map references
         external_spdxids = set()
-        for doc in graph.subjects(
-            RDF.type, URIRef(current_version.rdf_base) + "Core/SpdxDocument"
-        ):
-            for i in graph.objects(
-                doc, URIRef(current_version.rdf_base) + "Core/imports"
-            ):
-                for spdxid in graph.objects(
-                    i, URIRef(current_version.rdf_base) + "Core/externalSpdxId"
-                ):
-                    # If the SpdxID is in the graph as a subject, than do
-                    # not mark it as an external SpdxID, since there is a
-                    # resolved definition for it
-                    if (spdxid, None, None) in graph:
-                        if error_external:
-                            errors.append(
-                                f"ERROR: {str(spdxid)} in an ExternalMap and also defined in the document"
-                            )
-                    else:
-                        external_spdxids.add(str(spdxid))
+        for spdxid in current_version.get_imports(graph):
+            # If the SpdxID is in the graph as a subject, than do
+            # not mark it as an external SpdxID, since there is a
+            # resolved definition for it
+            if (spdxid, None, None) in graph:
+                if error_external:
+                    errors.append(
+                        f"ERROR: {str(spdxid)} in an ExternalMap and also defined in the document"
+                    )
+            else:
+                external_spdxids.add(str(spdxid))
 
         def check_external_ref_error(r):
             nonlocal results
