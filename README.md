@@ -17,10 +17,10 @@ useful. This includes:
 
 ## Installation
 
-`spdx3-validate` can be installed using `pip`:
+`spdx3-validate` can be installed using `pip` and `pipx`:
 
 ```shell
-python3 -m pip install spdx3-validate
+pipx install spdx3-validate
 ```
 
 ## Developing
