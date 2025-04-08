@@ -29,6 +29,32 @@ or
 pipx install spdx3-validate
 ```
 
+## Usage
+
+```shell
+spdx3-validate -j sbom.json
+```
+
+### Options
+
+All available options can be listed by this command:
+
+```shell
+spdx3-validate -h
+```
+
+```text
+options:
+  -h, --help            show this help message and exit
+  --json, -j JSON       Validate SPDX 3 JSON file (URL, path, or '-')
+  --spdx-version, -s {3.0.0,3.0.1,auto}
+                        SPDX Version to use, or 'auto' to determine version
+                        from input files
+  --version, -V         show program's version number and exit
+  --no-merge            Do not validate merged documents
+  --quiet, -q           Run quietly (do not show progress)
+```
+  
 ## Developing
 
 Developing on `spdx3-validate` is best done using a virtual environment. You
