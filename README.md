@@ -17,7 +17,13 @@ useful. This includes:
 
 ## Installation
 
-`spdx3-validate` can be installed using `pip` and `pipx`:
+`spdx3-validate` can be installed using `pip` and [`pipx`](https://github.com/pypa/pipx):
+
+```shell
+python3 -m pip install spdx3-validate
+```
+
+or
 
 ```shell
 pipx install spdx3-validate
