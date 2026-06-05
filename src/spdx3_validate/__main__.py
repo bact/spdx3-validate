@@ -1,8 +1,10 @@
 # /usr/bin/env python3
 #
 # Copyright (c) 2024 Joshua Watt
-#
+# SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
+import sys
+
 from .main import main
 
-main()
+sys.exit(main())

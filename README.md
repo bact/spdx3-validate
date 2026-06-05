@@ -23,6 +23,32 @@ useful. This includes:
 python3 -m pip install spdx3-validate
 ```
 
+## Library usage
+
+```python
+from spdx3_validate import spdx3validate
+
+# check single document
+result = spdx3validate(["doc.json"])
+
+# check a.json, b.json, and the merged document of a.json+b.json
+result = spdx3validate(["a.json", "b.json"], check_merged=True)
+
+if result:                       # truthy when valid
+    print("valid")
+else:
+    for r in result.results:     # one Result per input
+        print(r.shacl_errors)    # SHACL errors of each document
+    print(result.shacl_errors)   # SHACL errors of the merged document
+```
+
+- **`spdx3validate(...)` returns a `MergedResult`** — **truthy when valid**.
+- **`.results`** — list of **`Result`** (`.location`, `.load_errors`,
+  `.schema_errors`, `.shacl_errors`, `.valid`).
+- **`.shacl_errors`** — SHACL errors of the **merged document** (only with
+  **`check_merged=True`**).
+- **Raises** `UnsupportedVersionError` / `SchemaError` when validation can't run.
+
 ## Developing
 
 Developing on `spdx3-validate` is best done using a virtual environment. You

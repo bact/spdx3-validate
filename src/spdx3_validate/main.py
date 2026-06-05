@@ -1,36 +1,59 @@
 # Copyright (c) 2024 Joshua Watt
-#
+# SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
 import argparse
-import halo
+import contextlib
 import json
+import sys
+import textwrap
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
+
+import halo
 import jsonschema
 import pyshacl
 import rdflib
-import sys
-import textwrap
-import urllib.request
+from jsonschema.exceptions import ValidationError
+from rdflib import RDF, RDFS, SH, Graph, URIRef
+from rdflib.term import Node
 
-from rdflib import RDF, RDFS, SH, URIRef
-
-from pathlib import Path
 from .version import VERSION
-from .spdx_versions import find_version, SPDX_VERSIONS
+from .spdx_versions import find_version, SpdxVersion, SPDX_VERSIONS
+from .errors import Spdx3ValidateError, UnsupportedVersionError, SchemaError
+from .result import (
+    MergedResult,
+    ProgressFactory,
+    Result,
+    null_progress,
+)
 
 
-def read_location(location):
+def read_location(location: str) -> Union[str, bytes]:
     if "://" in location:
         with urllib.request.urlopen(location) as f:
-            return f.read()
+            data: bytes = f.read()
+            return data
     elif location == "-":
         return sys.stdin.read()
     else:
-        with Path(location).open("r") as f:
+        with Path(location).open("r", encoding="utf-8") as f:
             return f.read()
 
 
-def derives_from(cls, target, shacl_graph):
+def derives_from(cls: Node, target: Node, shacl_graph: Graph) -> bool:
     if cls == target:
         return True
 
@@ -41,8 +64,13 @@ def derives_from(cls, target, shacl_graph):
     return False
 
 
-def check_graph(graph, shacl_graph, current_version, error_external):
-    errors = []
+def check_graph(
+    graph: Graph,
+    shacl_graph: Graph,
+    current_version: SpdxVersion,
+    error_external: bool,
+) -> List[str]:
+    errors: List[str] = []
 
     conforms, results, _ = pyshacl.validate(
         graph,
@@ -54,16 +82,16 @@ def check_graph(graph, shacl_graph, current_version, error_external):
         results.bind("sh", SH)
         nm = rdflib.namespace.NamespaceManager(results)
 
-        def norm(uri):
+        def norm(uri: Any) -> str:
             return nm.normalizeUri(uri)
 
-        def pnode(n):
+        def pnode(n: Optional[Node]) -> str:
             if n:
                 return n.n3()
             return "-"
 
         # Collect all external map references
-        external_spdxids = set()
+        external_spdxids: Set[str] = set()
         for spdxid in current_version.get_imports(graph):
             # If the SpdxID is in the graph as a subject, than do
             # not mark it as an external SpdxID, since there is a
@@ -76,7 +104,7 @@ def check_graph(graph, shacl_graph, current_version, error_external):
             else:
                 external_spdxids.add(str(spdxid))
 
-        def check_external_ref_error(r):
+        def check_external_ref_error(r: Node) -> bool:
             if (r, RDF.type, SH.ValidationResult) not in results:
                 return False
 
@@ -141,15 +169,20 @@ def check_graph(graph, shacl_graph, current_version, error_external):
     return errors
 
 
-def iter_validation_errors(err):
+def iter_validation_errors(err: ValidationError) -> Iterator[ValidationError]:
     if err.context:
         for e in err.context:
             yield e
             yield from iter_validation_errors(e)
 
 
-def print_schema_error(err, filename, indent=0):
-    def print_err(e, indent, fn=None, message=False):
+def print_schema_error(err: ValidationError, filename: str, indent: int = 0) -> None:
+    def print_err(
+        e: ValidationError,
+        indent: int,
+        fn: Optional[str] = None,
+        message: bool = False,
+    ) -> None:
         loc = e.json_path
         if fn:
             loc = f"{fn}::{loc}"
@@ -167,12 +200,9 @@ def print_schema_error(err, filename, indent=0):
         i_str = " " * (indent + 2)
         print(i_str + "This error was caused by other underlying errors:")
 
-        error_map = {}
+        error_map: Dict[Tuple[Tuple[Any, ...], str], ValidationError] = {}
         for e in iter_validation_errors(err):
-            if isinstance(e, str):
-                error_map[(tuple(e.absolute_path), e.message)] = e
-            else:
-                error_map[(tuple(e.absolute_path), "")] = e
+            error_map[(tuple(e.absolute_path), "")] = e
 
         error_list = [
             error_map[k]
@@ -188,7 +218,8 @@ def print_schema_error(err, filename, indent=0):
     print()
 
 
-def main(cmdline_args=None):
+def main(cmdline_args: Optional[List[str]] = None) -> int:
+    """Main function for CLI. Returns exit code."""
     parser = argparse.ArgumentParser(
         description=f"Validate SPDX 3 files Version {VERSION}"
     )
@@ -227,45 +258,132 @@ def main(cmdline_args=None):
     )
     args = parser.parse_args(cmdline_args)
 
-    if args.spdx_version != "auto":
+    current_version = None if args.spdx_version == "auto" else args.spdx_version
+
+    try:
+        result = spdx3validate(
+            args.json,
+            current_version,
+            args.check_merged,
+            progress=_halo_progress(args.quiet),
+        )
+    except (Spdx3ValidateError, urllib.error.URLError) as e:
+        print(e)
+        return 1
+
+    return _print_results(result)
+
+
+def _halo_progress(quiet: bool) -> ProgressFactory:
+    """Build a progress factory for CLI use."""
+
+    @contextlib.contextmanager
+    def factory(text: str) -> Iterator[Any]:
+        with halo.Halo(text, enabled=not quiet) as spinner:
+            yield spinner
+
+    return factory
+
+
+def _print_results(result: MergedResult) -> int:
+    """Print a MergedResult for the CLI and return an exit code."""
+    for r in result.results:
+        for msg in r.load_errors:
+            print(msg)
+
+        if r.schema_errors:
+            print(f"ERROR: JSON Schema validation failed for {r.location}:")
+            for e in r.schema_errors:
+                print_schema_error(e, r.location)
+
+        if r.shacl_errors:
+            print(f"ERROR: SHACL Validation failed for {r.location}:")
+            print("\n".join(r.shacl_errors))
+
+    if result.merged_skipped:
+        print("WARNING: Skipping validation of merged documents due to previous errors")
+
+    if result.shacl_errors:
+        print("ERROR: SHACL Validation failed on merged files:")
+        print("\n".join(result.shacl_errors))
+
+    return 0 if result.valid else 1
+
+
+def _resolve_version(
+    current_version: Union[SpdxVersion, str, None],
+) -> Optional[SpdxVersion]:
+    """Normalize the version argument to a SpdxVersion or None (auto)."""
+    if current_version is None:
+        return None
+
+    if isinstance(current_version, str):
         for v in SPDX_VERSIONS:
-            if v.pretty == args.version:
-                current_version = v
-                break
-        else:
-            print(f"Unknown SPDX version {args.version}")
-            return 1
-    else:
-        current_version = None
+            if v.pretty == current_version:
+                return v
+        raise UnsupportedVersionError(f"Unknown SPDX version {current_version}")
 
-    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+    return current_version
 
 
-def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet=True):
-    files = []
+def spdx3validate(
+    json_files: Iterable[str],
+    current_version: Union[SpdxVersion, str, None] = None,
+    check_merged: bool = False,
+    *,
+    progress: Optional[ProgressFactory] = None,
+) -> MergedResult:
+    """Validate SPDX 3 JSON documents.
+
+    Args:
+        json_files: Iterable of locations (URL, path, or "-" for stdin).
+        current_version: A SpdxVersion, a version string like "3.0.1", or None
+            to auto-detect from the documents' @context.
+        check_merged: Also validate the merged graph of all documents.
+        progress: Optional context-manager factory ``progress(text)`` yielding an
+            object with ``.succeed()`` / ``.fail()`` (e.g. a halo spinner). Defaults
+            to a silent no-op.
+
+    Returns:
+        MergedResult describing per-file and merged outcomes. Truthy when valid.
+
+    Raises:
+        UnsupportedVersionError: Unknown version, or inputs mix incompatible versions.
+        SchemaError: The SPDX schema is not usable.
+        urllib.error.URLError: A schema/document URL could not be fetched.
+    """
+    report_progress: ProgressFactory = null_progress if progress is None else progress
+
+    version: Optional[SpdxVersion] = _resolve_version(current_version)
+
+    merged_result = MergedResult()
+    files: List[Tuple[str, Any, Graph]] = []
     for j in json_files:
-        with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
+        with report_progress(f"Loading {j}") as spinner:
             s = read_location(j)
             d = json.loads(s)
             if "@context" not in d:
                 spinner.fail()
-                print(f"No @context found in {j}")
-                return 1
-
-            version = find_version(d["@context"])
-            if version is None:
-                spinner.fail()
-                print(f"{j} has unknown version @context {d['@context']}")
-                return 1
-
-            if current_version is None:
-                current_version = version
-            elif current_version != version:
-                spinner.fail()
-                print(
-                    f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
+                merged_result.results.append(
+                    Result(j, load_errors=[f"No @context found in {j}"])
                 )
-                return 1
+                continue
+
+            doc_version = find_version(d["@context"])
+            if doc_version is None:
+                spinner.fail()
+                raise UnsupportedVersionError(
+                    f"{j} has unknown version @context {d['@context']}"
+                )
+
+            if version is None:
+                version = doc_version
+            elif version != doc_version:
+                spinner.fail()
+                raise UnsupportedVersionError(
+                    f"{j} has incompatible version {doc_version.pretty}. "
+                    f"Other documents are {version.pretty}"
+                )
 
             graph = rdflib.Graph()
             graph.parse(data=s, format="json-ld")
@@ -275,75 +393,74 @@ def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet
 
     if not files:
         # Nothing to do
-        return 0
+        return merged_result
 
-    with halo.Halo(
-        f"Loading SPDX {current_version.pretty}", enabled=not quiet
-    ) as spinner:
-        with urllib.request.urlopen(current_version.schema_url) as f:
+    if version is None:
+        # Unreachable: any document added to ``files`` set ``version``.
+        raise Spdx3ValidateError("Could not determine SPDX version")
+
+    with report_progress(f"Loading SPDX {version.pretty}") as spinner:
+        with urllib.request.urlopen(version.schema_url) as f:
             schema = json.load(f)
 
         shacl_graph = rdflib.Graph()
-        shacl_graph.parse(current_version.shacl_url)
+        shacl_graph.parse(version.shacl_url)
         spinner.succeed()
 
-    errors = 0
+    any_errors = False
 
     for fn, json_data, g in files:
-        with halo.Halo(f"Validating schema for {fn}", enabled=not quiet) as spinner:
+        result = Result(fn)
+        merged_result.results.append(result)
+
+        with report_progress(f"Validating schema for {fn}") as spinner:
             validator_cls = jsonschema.validators.validator_for(schema)
 
             try:
                 validator_cls.check_schema(schema)
             except jsonschema.exceptions.SchemaError as e:
-                spinner.fail(f"Invalid schema {current_version.schema_url}: {e}")
-                return 1
+                spinner.fail()
+                raise SchemaError(f"Invalid schema {version.schema_url}: {e}") from e
 
             validator = validator_cls(schema)
-            json_errors = list(validator.iter_errors(json_data))
+            json_errors: List[ValidationError] = list(validator.iter_errors(json_data))
             if json_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
         if json_errors:
-            print(f"ERROR: JSON Schema validation failed for {fn}:")
-            for e in json_errors:
-                print_schema_error(e, fn)
-                errors += 1
+            result.schema_errors = json_errors
 
-        with halo.Halo(f"Checking SHACL for {fn}", enabled=not quiet) as spinner:
-            e = check_graph(g, shacl_graph, current_version, True)
-            if e:
+        with report_progress(f"Checking SHACL for {fn}") as spinner:
+            shacl_errors = check_graph(g, shacl_graph, version, True)
+            if shacl_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
-        if e:
-            print(f"ERROR: SHACL Validation failed for {fn}:")
-            print("\n".join(e))
-            errors += 1
+        if shacl_errors:
+            result.shacl_errors = shacl_errors
+
+        if not result.valid:
+            any_errors = True
 
     if len(files) > 1 and check_merged:
-        if not errors:
-            with halo.Halo("Checking merged graph", enabled=not quiet) as spinner:
+        if not any_errors:
+            with report_progress("Checking SHACL for merged graph") as spinner:
                 merged_g = rdflib.Graph()
                 for _, _, g in files:
                     merged_g += g
 
-                e = check_graph(g, shacl_graph, current_version, False)
-                if e:
+                merged_shacl_errors = check_graph(merged_g, shacl_graph, version, False)
+                if merged_shacl_errors:
                     spinner.fail()
                 else:
                     spinner.succeed()
 
-            if e:
-                print("ERROR: SHACL Validation failed on merged files:")
-                print("\n".join(e))
-                errors += 1
+            if merged_shacl_errors:
+                merged_result.shacl_errors = merged_shacl_errors
         else:
-            print(
-                "WARNING: Skipping validation of merged documents due to previous errors"
-            )
+            merged_result.merged_skipped = True
 
-    return 1 if errors else 0
+    return merged_result
