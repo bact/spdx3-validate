@@ -29,8 +29,12 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "flake8 >= 7.0.0",
+    "mypy >= 1.14.1",
+    "pylint >= 3.2.7",
     "pytest >= 7.4",
     "pytest-cov >= 4.1",
+    "pytest-xdist >= 3.5",
+    "types-jsonschema >= 4.23.0.20241208",
 ]
 
 [project.urls]
@@ -48,10 +52,32 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "src/spdx3_validate/version.py"
 
+[tool.mypy]
+python_version = "3.8"
+strict = true
+files = ["src/spdx3_validate", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["halo"]
+ignore_missing_imports = true
+
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-statements",
+    "unused-argument",
+]
+
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = [
     "--import-mode=importlib",
-    "--cov=shacl2code",
+    "--cov=spdx3_validate",
+    "-n", "auto",
 ]
 
 [tool.coverage.run]
