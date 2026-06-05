@@ -18,10 +18,10 @@ def test_spdx3validate_is_callable() -> None:
     """Test that spdx3validate is callable."""
     # No input files -> nothing to validate -> a valid (truthy) result.
     result = spdx3_validate.spdx3validate([])
-    assert isinstance(result, spdx3_validate.ValidationResult)
+    assert isinstance(result, spdx3_validate.MergedResult)
     assert result.valid is True
     assert bool(result) is True
-    assert result.files == []
+    assert result.results == []
 
 
 def test_spdx3validate_invalid() -> None:
@@ -34,9 +34,9 @@ def test_spdx3validate_invalid() -> None:
     assert result.valid is False
     assert bool(result) is False
     # The offending file is reported with concrete errors.
-    bad = [f for f in result.files if not f.valid]
+    bad = [r for r in result.results if not r.valid]
     assert bad
-    assert any(f.schema_errors or f.shacl_errors for f in bad)
+    assert any(r.schema_errors or r.shacl_errors for r in bad)
 
 
 def test_spdx3validate_valid() -> None:
@@ -47,4 +47,4 @@ def test_spdx3validate_valid() -> None:
     except urllib.error.URLError as e:
         pytest.skip(f"network unavailable: {e}")
     assert result.valid is True
-    assert all(f.valid for f in result.files)
+    assert all(r.valid for r in result.results)

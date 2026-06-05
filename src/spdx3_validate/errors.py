@@ -5,7 +5,7 @@
 """Exceptions raised by spdx3-validate.
 
 These signal *operational* failures (the tool cannot perform validation),
-as opposed to a document simply being invalid (reported via ValidationResult).
+as opposed to a document simply being invalid (reported via MergedResult).
 """
 
 

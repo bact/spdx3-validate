@@ -34,9 +34,9 @@ from .version import VERSION
 from .spdx_versions import find_version, SpdxVersion, SPDX_VERSIONS
 from .errors import Spdx3ValidateError, UnsupportedVersionError, SchemaError
 from .result import (
-    FileResult,
+    MergedResult,
     ProgressFactory,
-    ValidationResult,
+    Result,
     null_progress,
 )
 
@@ -271,7 +271,7 @@ def main(cmdline_args: Optional[List[str]] = None) -> int:
         print(e)
         return 1
 
-    return _report(result)
+    return _print_results(result)
 
 
 def _halo_progress(quiet: bool) -> ProgressFactory:
@@ -285,27 +285,27 @@ def _halo_progress(quiet: bool) -> ProgressFactory:
     return factory
 
 
-def _report(result: ValidationResult) -> int:
-    """Print a ValidationResult for the CLI and return an exit code."""
-    for f in result.files:
-        for msg in f.load_errors:
+def _print_results(result: MergedResult) -> int:
+    """Print a MergedResult for the CLI and return an exit code."""
+    for r in result.results:
+        for msg in r.load_errors:
             print(msg)
 
-        if f.schema_errors:
-            print(f"ERROR: JSON Schema validation failed for {f.location}:")
-            for e in f.schema_errors:
-                print_schema_error(e, f.location)
+        if r.schema_errors:
+            print(f"ERROR: JSON Schema validation failed for {r.location}:")
+            for e in r.schema_errors:
+                print_schema_error(e, r.location)
 
-        if f.shacl_errors:
-            print(f"ERROR: SHACL Validation failed for {f.location}:")
-            print("\n".join(f.shacl_errors))
+        if r.shacl_errors:
+            print(f"ERROR: SHACL Validation failed for {r.location}:")
+            print("\n".join(r.shacl_errors))
 
     if result.merged_skipped:
         print("WARNING: Skipping validation of merged documents due to previous errors")
 
-    if result.merged_errors:
+    if result.shacl_errors:
         print("ERROR: SHACL Validation failed on merged files:")
-        print("\n".join(result.merged_errors))
+        print("\n".join(result.shacl_errors))
 
     return 0 if result.valid else 1
 
@@ -332,7 +332,7 @@ def spdx3validate(
     check_merged: bool = False,
     *,
     progress: Optional[ProgressFactory] = None,
-) -> ValidationResult:
+) -> MergedResult:
     """Validate SPDX 3 JSON documents.
 
     Args:
@@ -345,7 +345,7 @@ def spdx3validate(
             to a silent no-op.
 
     Returns:
-        ValidationResult describing per-file and merged outcomes. Truthy when valid.
+        MergedResult describing per-file and merged outcomes. Truthy when valid.
 
     Raises:
         UnsupportedVersionError: Unknown version, or inputs mix incompatible versions.
@@ -356,7 +356,7 @@ def spdx3validate(
 
     version: Optional[SpdxVersion] = _resolve_version(current_version)
 
-    result = ValidationResult()
+    merged_result = MergedResult()
     files: List[Tuple[str, Any, Graph]] = []
     for j in json_files:
         with report_progress(f"Loading {j}") as spinner:
@@ -364,8 +364,8 @@ def spdx3validate(
             d = json.loads(s)
             if "@context" not in d:
                 spinner.fail()
-                result.files.append(
-                    FileResult(j, load_errors=[f"No @context found in {j}"])
+                merged_result.results.append(
+                    Result(j, load_errors=[f"No @context found in {j}"])
                 )
                 continue
 
@@ -393,7 +393,7 @@ def spdx3validate(
 
     if not files:
         # Nothing to do
-        return result
+        return merged_result
 
     if version is None:
         # Unreachable: any document added to ``files`` set ``version``.
@@ -410,8 +410,8 @@ def spdx3validate(
     any_errors = False
 
     for fn, json_data, g in files:
-        file_result = FileResult(fn)
-        result.files.append(file_result)
+        result = Result(fn)
+        merged_result.results.append(result)
 
         with report_progress(f"Validating schema for {fn}") as spinner:
             validator_cls = jsonschema.validators.validator_for(schema)
@@ -430,7 +430,7 @@ def spdx3validate(
                 spinner.succeed()
 
         if json_errors:
-            file_result.schema_errors = json_errors
+            result.schema_errors = json_errors
 
         with report_progress(f"Checking SHACL for {fn}") as spinner:
             shacl_errors = check_graph(g, shacl_graph, version, True)
@@ -440,27 +440,27 @@ def spdx3validate(
                 spinner.succeed()
 
         if shacl_errors:
-            file_result.shacl_errors = shacl_errors
+            result.shacl_errors = shacl_errors
 
-        if not file_result.valid:
+        if not result.valid:
             any_errors = True
 
     if len(files) > 1 and check_merged:
         if not any_errors:
-            with report_progress("Checking merged graph") as spinner:
+            with report_progress("Checking SHACL for merged graph") as spinner:
                 merged_g = rdflib.Graph()
                 for _, _, g in files:
                     merged_g += g
 
-                merged_errors = check_graph(merged_g, shacl_graph, version, False)
-                if merged_errors:
+                merged_shacl_errors = check_graph(merged_g, shacl_graph, version, False)
+                if merged_shacl_errors:
                     spinner.fail()
                 else:
                     spinner.succeed()
 
-            if merged_errors:
-                result.merged_errors = merged_errors
+            if merged_shacl_errors:
+                merged_result.shacl_errors = merged_shacl_errors
         else:
-            result.merged_skipped = True
+            merged_result.merged_skipped = True
 
-    return result
+    return merged_result

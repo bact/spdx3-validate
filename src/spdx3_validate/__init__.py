@@ -5,16 +5,16 @@
 
 from .version import VERSION as __version__
 from .errors import SchemaError, Spdx3ValidateError, UnsupportedVersionError
-from .result import FileResult, ValidationResult
+from .result import MergedResult, Result
 from .main import main, spdx3validate
 
 __all__ = [
     "__version__",
-    "FileResult",
+    "MergedResult",
+    "Result",
     "SchemaError",
     "Spdx3ValidateError",
     "UnsupportedVersionError",
-    "ValidationResult",
     "main",
     "spdx3validate",
 ]

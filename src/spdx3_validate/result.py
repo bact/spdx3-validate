@@ -25,7 +25,7 @@ ProgressFactory = Callable[[str], ContextManager[Spinner]]
 
 
 @dataclass
-class FileResult:
+class Result:
     """Validation outcome for a single input document."""
 
     location: str
@@ -39,16 +39,21 @@ class FileResult:
 
 
 @dataclass
-class ValidationResult:
-    """Aggregate validation outcome across all input documents."""
+class MergedResult:
+    """Aggregate validation outcome across all input documents.
 
-    files: List[FileResult] = field(default_factory=list)
-    merged_errors: List[str] = field(default_factory=list)
+    Holds a :class:`Result` per input document, plus the SHACL errors of the
+    merged document (the union of all inputs) -- the same kind of content as
+    :attr:`Result.shacl_errors`.
+    """
+
+    results: List[Result] = field(default_factory=list)
+    shacl_errors: List[str] = field(default_factory=list)
     merged_skipped: bool = False
 
     @property
     def valid(self) -> bool:
-        return all(f.valid for f in self.files) and not self.merged_errors
+        return all(r.valid for r in self.results) and not self.shacl_errors
 
     def __bool__(self) -> bool:
         return self.valid
