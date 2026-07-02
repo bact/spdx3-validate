@@ -5,14 +5,20 @@
 
 import argparse
 import halo
-import json
 import jsonschema
 import rdflib
-import urllib.request
 
 from .version import VERSION
-from .spdx_versions import find_version, SPDX_VERSIONS
-from .core import check_graph, read_location
+from .spdx_versions import SPDX_VERSIONS
+from .core import (
+    Document,
+    SpdxValidateError,
+    UnknownVersionError,
+    check_graph,
+    load_validation_data,
+    schema_validator,
+    _resolve_version,
+)
 
 
 def iter_validation_errors(err):
@@ -101,111 +107,98 @@ def main(cmdline_args=None):
     )
     args = parser.parse_args(cmdline_args)
 
-    if args.spdx_version != "auto":
-        for v in SPDX_VERSIONS:
-            if v.pretty == args.version:
-                current_version = v
-                break
-        else:
-            print(f"Unknown SPDX version {args.version}")
-            return 1
-    else:
-        current_version = None
+    try:
+        current_version = _resolve_version(
+            None if args.spdx_version == "auto" else args.spdx_version
+        )
+    except UnknownVersionError as e:
+        print(str(e))
+        return 1
 
     return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
 
 
-def spdx3validate(json_files, current_version="3.0.1", check_merged=False, quiet=True):
-    files = []
+def spdx3validate(json_files, current_version=None, check_merged=False, quiet=True):
+    current_version = _resolve_version(current_version)
+
+    documents = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
-            s = read_location(j)
-            d = json.loads(s)
-            if "@context" not in d:
+            try:
+                doc = Document.load(j)
+            except SpdxValidateError as e:
                 spinner.fail()
-                print(f"No @context found in {j}")
-                return 1
-
-            version = find_version(d["@context"])
-            if version is None:
-                spinner.fail()
-                print(f"{j} has unknown version @context {d['@context']}")
+                print(str(e))
                 return 1
 
             if current_version is None:
-                current_version = version
-            elif current_version != version:
+                current_version = doc.version
+            elif current_version != doc.version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
+                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {current_version.pretty}"
                 )
                 return 1
 
-            graph = rdflib.Graph()
-            graph.parse(data=s, format="json-ld")
-
-            files.append((j, d, graph))
+            documents.append(doc)
             spinner.succeed()
 
-    if not files:
+    if not documents:
         # Nothing to do
         return 0
 
     with halo.Halo(
         f"Loading SPDX {current_version.pretty}", enabled=not quiet
     ) as spinner:
-        with urllib.request.urlopen(current_version.schema_url) as f:
-            schema = json.load(f)
-
-        shacl_graph = rdflib.Graph()
-        shacl_graph.parse(current_version.shacl_url)
+        schema, shacl_graph = load_validation_data(current_version)
         spinner.succeed()
 
     errors = 0
 
-    for fn, json_data, g in files:
-        with halo.Halo(f"Validating schema for {fn}", enabled=not quiet) as spinner:
-            validator_cls = jsonschema.validators.validator_for(schema)
-
+    for doc in documents:
+        with halo.Halo(
+            f"Validating schema for {doc.source}", enabled=not quiet
+        ) as spinner:
             try:
-                validator_cls.check_schema(schema)
+                validator = schema_validator(schema)
             except jsonschema.exceptions.SchemaError as e:
                 spinner.fail(f"Invalid schema {current_version.schema_url}: {e}")
                 return 1
 
-            validator = validator_cls(schema)
-            json_errors = list(validator.iter_errors(json_data))
+            json_errors = list(validator.iter_errors(doc.data))
             if json_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
         if json_errors:
-            print(f"ERROR: JSON Schema validation failed for {fn}:")
+            print(f"ERROR: JSON Schema validation failed for {doc.source}:")
             for e in json_errors:
-                print_schema_error(e, fn)
+                print_schema_error(e, doc.source)
                 errors += 1
 
-        with halo.Halo(f"Checking SHACL for {fn}", enabled=not quiet) as spinner:
-            e = check_graph(g, shacl_graph, current_version, True)
+        with halo.Halo(
+            f"Checking SHACL for {doc.source}", enabled=not quiet
+        ) as spinner:
+            e = check_graph(doc.graph, shacl_graph, current_version, True)
             if e:
                 spinner.fail()
             else:
                 spinner.succeed()
 
         if e:
-            print(f"ERROR: SHACL Validation failed for {fn}:")
+            print(f"ERROR: SHACL Validation failed for {doc.source}:")
             print("\n".join(e))
             errors += 1
 
-    if len(files) > 1 and check_merged:
+    if len(documents) > 1 and check_merged:
         if not errors:
             with halo.Halo("Checking merged graph", enabled=not quiet) as spinner:
                 merged_g = rdflib.Graph()
-                for _, _, g in files:
-                    merged_g += g
+                for doc in documents:
+                    merged_g += doc.graph
 
-                e = check_graph(g, shacl_graph, current_version, False)
+                e = check_graph(merged_g, shacl_graph, current_version, False)
                 if e:
                     spinner.fail()
                 else:
