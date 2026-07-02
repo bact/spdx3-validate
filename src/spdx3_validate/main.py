@@ -107,19 +107,17 @@ def main(cmdline_args=None):
     )
     args = parser.parse_args(cmdline_args)
 
-    try:
-        current_version = _resolve_version(
-            None if args.spdx_version == "auto" else args.spdx_version
-        )
-    except UnknownVersionError as e:
-        print(str(e))
-        return 1
+    current_version = None if args.spdx_version == "auto" else args.spdx_version
 
     return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
 
 
 def spdx3validate(json_files, current_version=None, check_merged=False, quiet=True):
-    current_version = _resolve_version(current_version)
+    try:
+        current_version = _resolve_version(current_version)
+    except UnknownVersionError as e:
+        print(str(e))
+        return 1
 
     documents = []
     for j in json_files:
