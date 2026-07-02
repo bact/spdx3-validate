@@ -14,7 +14,6 @@ top of these primitives.
 """
 
 import json
-import sys
 import textwrap
 import urllib.request
 from dataclasses import dataclass, field
@@ -41,7 +40,7 @@ class ValidationError:
     """A single validation finding, attributed to the document it came from.
 
     Attributes:
-        source: The document the error was found in (path, URL, or ``"-"``).
+        source: The document the error was found in (its :attr:`Document.source`).
             For a merged-graph check this is ``"(merged)"``.
         kind: ``"schema"`` for JSON Schema errors, ``"shacl"`` for SHACL ones.
         message: The human-readable description of the problem.
@@ -72,12 +71,10 @@ def _resolve_version(version):
 
 
 def read_location(location):
-    """Read the contents of a path, an URL, or ``"-"`` for standard input."""
+    """Read the contents of a path or an URL."""
     if "://" in location:
         with urllib.request.urlopen(location) as f:
             return f.read()
-    if location == "-":
-        return sys.stdin.read()
     with Path(location).open("r") as f:
         return f.read()
 
@@ -87,7 +84,9 @@ class Document:
     """An SPDX 3 document loaded from a source location.
 
     Attributes:
-        source: Where the document was loaded from (path, URL, or ``"-"``).
+        source: Where the document came from. A path or URL for documents
+            loaded with :meth:`load`, or any caller-supplied label for
+            documents built with :meth:`from_text`.
         data: The parsed JSON content.
         graph: The document parsed as an RDF graph.
         version: The SPDX version detected from the document's ``@context``.
@@ -100,13 +99,27 @@ class Document:
 
     @classmethod
     def load(cls, source):
-        """Load and parse an SPDX 3 document from a path, URL, or ``"-"``.
+        """Load and parse an SPDX 3 document from a path or URL.
 
         Raises:
             SpdxValidateError: The document has no ``@context``.
             UnknownVersionError: The ``@context`` is not a known SPDX version.
         """
-        text = read_location(source)
+        return cls.from_text(source, read_location(source))
+
+    @classmethod
+    def from_text(cls, source, text):
+        """Parse an SPDX 3 document already held in memory.
+
+        Args:
+            source: A label identifying the document (e.g. a filename), used
+                only to attribute errors to it.
+            text: The raw JSON-LD document content.
+
+        Raises:
+            SpdxValidateError: The document has no ``@context``.
+            UnknownVersionError: The ``@context`` is not a known SPDX version.
+        """
         data = json.loads(text)
 
         if "@context" not in data:
@@ -306,7 +319,7 @@ def validate(sources, *, version=None, check_merged=False):
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
     Args:
-        sources: A single path/URL/``"-"``, or an iterable of them.
+        sources: A single path or URL, or an iterable of them.
         version: SPDX version to validate against (e.g. ``"3.0.1"``). When
             ``None`` (the default) the version is detected from each document's
             ``@context``.

@@ -4,6 +4,8 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
+import sys
+
 import halo
 import jsonschema
 import rdflib
@@ -19,6 +21,17 @@ from .core import (
     schema_validator,
     _resolve_version,
 )
+
+
+def load_cli_document(source):
+    """Load a document from a path, URL, or ``"-"`` for standard input.
+
+    Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
+    command-line convention (not a library one) for reading from stdin.
+    """
+    if source == "-":
+        return Document.from_text(source, sys.stdin.read())
+    return Document.load(source)
 
 
 def iter_validation_errors(err):
@@ -123,7 +136,7 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
-                doc = Document.load(j)
+                doc = load_cli_document(j)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
