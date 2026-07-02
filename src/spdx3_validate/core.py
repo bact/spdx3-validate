@@ -75,7 +75,7 @@ def read_location(location):
     if "://" in location:
         with urllib.request.urlopen(location) as f:
             return f.read()
-    with Path(location).open("r") as f:
+    with Path(location).open("r", encoding="utf-8") as f:
         return f.read()
 
 

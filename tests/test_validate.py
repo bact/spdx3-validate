@@ -57,7 +57,7 @@ def test_validate_no_sources_is_valid() -> None:
 def test_validate_missing_context_raises(tmp_path: Path) -> None:
     """A document without an @context raises SpdxValidateError (no network)."""
     bad = tmp_path / "no_context.json"
-    bad.write_text(json.dumps({"foo": "bar"}))
+    bad.write_text(json.dumps({"foo": "bar"}), encoding="utf-8")
     with pytest.raises(spdx3_validate.SpdxValidateError):
         spdx3_validate.validate(str(bad))
 
