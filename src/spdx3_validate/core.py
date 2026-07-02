@@ -20,7 +20,7 @@ import textwrap
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import jsonschema
 import pyshacl
@@ -166,7 +166,11 @@ def schema_validator(schema: Dict[str, Any]) -> jsonschema.protocols.Validator:
     """
     validator_cls = jsonschema.validators.validator_for(schema)
     validator_cls.check_schema(schema)
-    return cast(jsonschema.protocols.Validator, validator_cls(schema))
+    # validator_for()'s return type varies with the jsonschema/types-jsonschema
+    # version resolved, so assign through an annotation instead of cast() --
+    # cast() is flagged "redundant" in environments where this is already typed.
+    validator: jsonschema.protocols.Validator = validator_cls(schema)
+    return validator
 
 
 def _schema_error(
@@ -207,14 +211,12 @@ def check_graph(
     errors: List[str] = []
 
     # pyshacl.validate() has no return type annotation, so its result is
-    # cast here to restore type checking for the rest of this function.
-    validate_result = cast(
-        Tuple[bool, rdflib.Graph, str],
-        pyshacl.validate(
-            graph,
-            shacl_graph=shacl_graph,
-            ont_graph=shacl_graph,
-        ),
+    # typed here via annotation to restore type checking for the rest of
+    # this function.
+    validate_result: Tuple[bool, rdflib.Graph, str] = pyshacl.validate(
+        graph,
+        shacl_graph=shacl_graph,
+        ont_graph=shacl_graph,
     )
     conforms, results, _ = validate_result
 

@@ -63,7 +63,9 @@ addopts = [
 relative_files = true
 
 [tool.mypy]
-python_version = "3.8"
+# This for mypy's target, not requires-python
+# mypy minimum supported version is 3.10
+python_version = "3.10"
 files = ["src"]
 strict = true
 
