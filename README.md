@@ -27,7 +27,7 @@ python3 -m pip install spdx3-validate
 
 `spdx3-validate` can also be used programmatically.
 `validate()` takes a single source or an iterable of sources
-(a path, a URL, or `"-"` for standard input) and returns a `ValidationResult`:
+(a path or a URL) and returns a `ValidationResult`:
 
 ```python
 import spdx3_validate
@@ -42,7 +42,7 @@ for error in result.errors:
 ```
 
 - The SPDX version is detected from each document's `@context`;
-  pass `version="3.0.1"` to force one.
+  pass `version="X.Y"` to force one.
 - Set `check_merged=True` to also validate the merged graph of several
   documents together.
 - A document that cannot be loaded (missing `@context`, unknown version,
@@ -62,5 +62,6 @@ pip install -e ".[dev]"
 
 ## TODO
 
-* Option to automatically download dependencies based on `locationHint`
-* Offline validation?
+- Option to automatically download dependencies based on `locationHint`
+- Offline validation?
+- Cache downloaded context
