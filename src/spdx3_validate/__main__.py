@@ -1,7 +1,8 @@
 # /usr/bin/env python3
 #
-# Copyright (c) 2024 Joshua Watt
-#
+# SPDX-FileContributor: Joshua Watt
+# SPDX-FileCopyrightText: 2024 Joshua Watt
+# SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 from .main import main
 

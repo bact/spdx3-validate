@@ -1,5 +1,6 @@
-# Copyright (c) 2024 Joshua Watt
-#
+# SPDX-FileContributor: Joshua Watt
+# SPDX-FileCopyrightText: 2024 Joshua Watt
+# SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
 from collections import namedtuple
