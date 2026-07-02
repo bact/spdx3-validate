@@ -3,15 +3,18 @@
 # SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
+from __future__ import annotations
+
 import argparse
 import sys
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import halo
 import jsonschema
 import rdflib
 
 from .version import VERSION
-from .spdx_versions import SPDX_VERSIONS
+from .spdx_versions import SPDX_VERSIONS, SpdxVersion
 from .core import (
     Document,
     SpdxValidateError,
@@ -23,7 +26,7 @@ from .core import (
 )
 
 
-def load_cli_document(source):
+def load_cli_document(source: str) -> Document:
     """Load a document from a path, URL, or ``"-"`` for standard input.
 
     Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
@@ -34,15 +37,24 @@ def load_cli_document(source):
     return Document.load(source)
 
 
-def iter_validation_errors(err):
+def iter_validation_errors(
+    err: jsonschema.exceptions.ValidationError,
+) -> Iterator[jsonschema.exceptions.ValidationError]:
     if err.context:
         for e in err.context:
             yield e
             yield from iter_validation_errors(e)
 
 
-def print_schema_error(err, filename, indent=0):
-    def print_err(e, indent, fn=None, message=False):
+def print_schema_error(
+    err: jsonschema.exceptions.ValidationError, filename: str, indent: int = 0
+) -> None:
+    def print_err(
+        e: jsonschema.exceptions.ValidationError,
+        indent: int,
+        fn: Optional[str] = None,
+        message: bool = False,
+    ) -> None:
         loc = e.json_path
         if fn:
             loc = f"{fn}::{loc}"
@@ -60,7 +72,7 @@ def print_schema_error(err, filename, indent=0):
         i_str = " " * (indent + 2)
         print(i_str + "This error was caused by other underlying errors:")
 
-        error_map = {}
+        error_map: Dict[Any, jsonschema.exceptions.ValidationError] = {}
         for e in iter_validation_errors(err):
             if isinstance(e, str):
                 error_map[(tuple(e.absolute_path), e.message)] = e
@@ -81,7 +93,7 @@ def print_schema_error(err, filename, indent=0):
     print()
 
 
-def main(cmdline_args=None):
+def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=f"Validate SPDX 3 files Version {VERSION}"
     )
@@ -125,14 +137,19 @@ def main(cmdline_args=None):
     return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
 
 
-def spdx3validate(json_files, current_version=None, check_merged=False, quiet=True):
+def spdx3validate(
+    json_files: List[str],
+    current_version: Union[str, SpdxVersion, None] = None,
+    check_merged: bool = False,
+    quiet: bool = True,
+) -> int:
     try:
-        current_version = _resolve_version(current_version)
+        resolved_version = _resolve_version(current_version)
     except UnknownVersionError as e:
         print(str(e))
         return 1
 
-    documents = []
+    documents: List[Document] = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
@@ -142,12 +159,12 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
                 print(str(e))
                 return 1
 
-            if current_version is None:
-                current_version = doc.version
-            elif current_version != doc.version:
+            if resolved_version is None:
+                resolved_version = doc.version
+            elif resolved_version != doc.version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {current_version.pretty}"
+                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {resolved_version.pretty}"
                 )
                 return 1
 
@@ -158,10 +175,13 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
         # Nothing to do
         return 0
 
+    # documents is non-empty, so the loop above set resolved_version at least once.
+    assert resolved_version is not None
+
     with halo.Halo(
-        f"Loading SPDX {current_version.pretty}", enabled=not quiet
+        f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
-        schema, shacl_graph = load_validation_data(current_version)
+        schema, shacl_graph = load_validation_data(resolved_version)
         spinner.succeed()
 
     errors = 0
@@ -173,7 +193,7 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
             try:
                 validator = schema_validator(schema)
             except jsonschema.exceptions.SchemaError as e:
-                spinner.fail(f"Invalid schema {current_version.schema_url}: {e}")
+                spinner.fail(f"Invalid schema {resolved_version.schema_url}: {e}")
                 return 1
 
             json_errors = list(validator.iter_errors(doc.data))
@@ -184,22 +204,22 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
 
         if json_errors:
             print(f"ERROR: JSON Schema validation failed for {doc.source}:")
-            for e in json_errors:
-                print_schema_error(e, doc.source)
+            for json_err in json_errors:
+                print_schema_error(json_err, doc.source)
                 errors += 1
 
         with halo.Halo(
             f"Checking SHACL for {doc.source}", enabled=not quiet
         ) as spinner:
-            e = check_graph(doc.graph, shacl_graph, current_version, True)
-            if e:
+            graph_errors = check_graph(doc.graph, shacl_graph, resolved_version, True)
+            if graph_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
-        if e:
+        if graph_errors:
             print(f"ERROR: SHACL Validation failed for {doc.source}:")
-            print("\n".join(e))
+            print("\n".join(graph_errors))
             errors += 1
 
     if len(documents) > 1 and check_merged:
@@ -209,15 +229,17 @@ def spdx3validate(json_files, current_version=None, check_merged=False, quiet=Tr
                 for doc in documents:
                     merged_g += doc.graph
 
-                e = check_graph(merged_g, shacl_graph, current_version, False)
-                if e:
+                graph_errors = check_graph(
+                    merged_g, shacl_graph, resolved_version, False
+                )
+                if graph_errors:
                     spinner.fail()
                 else:
                     spinner.succeed()
 
-            if e:
+            if graph_errors:
                 print("ERROR: SHACL Validation failed on merged files:")
-                print("\n".join(e))
+                print("\n".join(graph_errors))
                 errors += 1
         else:
             print(

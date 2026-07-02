@@ -31,8 +31,10 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "flake8 >= 7.0.0",
+    "mypy >= 1.11",
     "pytest >= 7.4",
     "pytest-cov >= 4.1",
+    "types-jsonschema >= 4.21",
 ]
 
 [project.urls]
@@ -59,3 +61,12 @@ addopts = [
 
 [tool.coverage.run]
 relative_files = true
+
+[tool.mypy]
+python_version = "3.8"
+files = ["src"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["halo.*"]
+ignore_missing_imports = true
