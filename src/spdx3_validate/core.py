@@ -299,7 +299,7 @@ class ValidationResult:
         return self.valid
 
     def __str__(self):
-        return "\n".join(self.errors)
+        return "\n".join(str(e) for e in self.errors)
 
 
 def validate(sources, *, version=None, check_merged=False):

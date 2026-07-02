@@ -49,9 +49,10 @@ build-backend = "hatchling.build"
 path = "src/spdx3_validate/version.py"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = [
     "--import-mode=importlib",
-    "--cov=shacl2code",
+    "--cov=spdx3_validate",
 ]
 
 [tool.coverage.run]
