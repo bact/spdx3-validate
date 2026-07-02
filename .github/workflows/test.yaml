@@ -33,7 +33,7 @@ jobs:
           python -m build
       - name: Install package
         run: |
-          pip install -e .[dev]
+          pip install -e ".[dev]"
       - name: Run tests
         run: |
           pytest -v
@@ -47,3 +47,10 @@ jobs:
           python-version: "3.11"
       - uses: psf/black@87928e6d6761a4a6d22250e1fee5601b3998086e # 26.5.1
       - uses: py-actions/flake8@84ec6726560b6d5bd68f2a5bed83d62b52bb50ba # v2.3.0
+      - name: Install mypy
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run mypy
+        run: |
+          mypy

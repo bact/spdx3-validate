@@ -13,16 +13,20 @@ in :mod:`spdx3_validate.main` builds its progress spinners and error printing on
 top of these primitives.
 """
 
+from __future__ import annotations
+
 import json
 import textwrap
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
 import jsonschema
 import pyshacl
 import rdflib
 from rdflib import RDF, RDFS, SH, URIRef
+from rdflib.term import Node
 
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
 
@@ -50,11 +54,13 @@ class ValidationError:
     kind: str
     message: str
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.source} [{self.kind}]: {self.message}"
 
 
-def _resolve_version(version):
+def _resolve_version(
+    version: Union[str, SpdxVersion, None],
+) -> Optional[SpdxVersion]:
     """Normalise a version argument to a :class:`SpdxVersion` or ``None``.
 
     Accepts ``None`` (auto-detect from the documents), a :class:`SpdxVersion`,
@@ -70,11 +76,12 @@ def _resolve_version(version):
     raise UnknownVersionError(f"Unknown SPDX version {version}")
 
 
-def read_location(location):
+def read_location(location: str) -> str:
     """Read the contents of a path or an URL."""
     if "://" in location:
         with urllib.request.urlopen(location) as f:
-            return f.read()
+            content: bytes = f.read()
+            return content.decode("utf-8")
     with Path(location).open("r", encoding="utf-8") as f:
         return f.read()
 
@@ -93,12 +100,12 @@ class Document:
     """
 
     source: str
-    data: dict
+    data: Dict[str, Any]
     graph: rdflib.Graph
     version: SpdxVersion
 
     @classmethod
-    def load(cls, source):
+    def load(cls, source: str) -> Document:
         """Load and parse an SPDX 3 document from a path or URL.
 
         Raises:
@@ -108,7 +115,7 @@ class Document:
         return cls.from_text(source, read_location(source))
 
     @classmethod
-    def from_text(cls, source, text):
+    def from_text(cls, source: str, text: str) -> Document:
         """Parse an SPDX 3 document already held in memory.
 
         Args:
@@ -137,7 +144,7 @@ class Document:
         return cls(source, data, graph, version)
 
 
-def load_validation_data(version):
+def load_validation_data(version: SpdxVersion) -> Tuple[Dict[str, Any], rdflib.Graph]:
     """Download the JSON Schema and SHACL model for an SPDX *version*.
 
     Returns a ``(schema, shacl_graph)`` tuple.
@@ -151,7 +158,7 @@ def load_validation_data(version):
     return schema, shacl_graph
 
 
-def schema_validator(schema):
+def schema_validator(schema: Dict[str, Any]) -> jsonschema.protocols.Validator:
     """Return a ``jsonschema`` validator, checking that *schema* is well formed.
 
     Raises:
@@ -159,10 +166,12 @@ def schema_validator(schema):
     """
     validator_cls = jsonschema.validators.validator_for(schema)
     validator_cls.check_schema(schema)
-    return validator_cls(schema)
+    return cast(jsonschema.protocols.Validator, validator_cls(schema))
 
 
-def _schema_error(source, err):
+def _schema_error(
+    source: str, err: jsonschema.exceptions.ValidationError
+) -> ValidationError:
     """Build a :class:`ValidationError` from a ``jsonschema`` error."""
     if isinstance(err.instance, str):
         message = err.message
@@ -171,7 +180,7 @@ def _schema_error(source, err):
     return ValidationError(source, "schema", f"{err.json_path}: {message}")
 
 
-def derives_from(cls, target, shacl_graph):
+def derives_from(cls: Node, target: Node, shacl_graph: rdflib.Graph) -> bool:
     """Return True if RDF class *cls* is, or derives from, *target*."""
     if cls == target:
         return True
@@ -183,35 +192,47 @@ def derives_from(cls, target, shacl_graph):
     return False
 
 
-def check_graph(graph, shacl_graph, current_version, error_external):
+def check_graph(
+    graph: rdflib.Graph,
+    shacl_graph: rdflib.Graph,
+    current_version: SpdxVersion,
+    error_external: bool,
+) -> List[str]:
     """Validate *graph* against *shacl_graph*, returning a list of error strings.
 
     External ``spdxId`` references declared in an ``ExternalMap`` are not
     reported as missing. When *error_external* is true, an ``spdxId`` that is
     both imported and defined in the document is reported as an error.
     """
-    errors = []
+    errors: List[str] = []
 
-    conforms, results, _ = pyshacl.validate(
-        graph,
-        shacl_graph=shacl_graph,
-        ont_graph=shacl_graph,
+    # pyshacl.validate() has no return type annotation, so its result is
+    # cast here to restore type checking for the rest of this function.
+    validate_result = cast(
+        Tuple[bool, rdflib.Graph, str],
+        pyshacl.validate(
+            graph,
+            shacl_graph=shacl_graph,
+            ont_graph=shacl_graph,
+        ),
     )
+    conforms, results, _ = validate_result
 
     if not conforms:
         results.bind("sh", SH)
         nm = rdflib.namespace.NamespaceManager(results)
 
-        def norm(uri):
-            return nm.normalizeUri(uri)
+        def norm(uri: Optional[Node]) -> str:
+            assert uri is not None
+            return nm.normalizeUri(str(uri))
 
-        def pnode(n):
+        def pnode(n: Optional[Node]) -> str:
             if n:
                 return n.n3()
             return "-"
 
         # Collect all external map references
-        external_spdxids = set()
+        external_spdxids: set[str] = set()
         for spdxid in current_version.get_imports(graph):
             # If the SpdxID is in the graph as a subject, than do
             # not mark it as an external SpdxID, since there is a
@@ -224,7 +245,7 @@ def check_graph(graph, shacl_graph, current_version, error_external):
             else:
                 external_spdxids.add(str(spdxid))
 
-        def check_external_ref_error(r):
+        def check_external_ref_error(r: Node) -> bool:
             if (r, RDF.type, SH.ValidationResult) not in results:
                 return False
 
@@ -266,7 +287,7 @@ def check_graph(graph, shacl_graph, current_version, error_external):
                 if check_external_ref_error(r):
                     continue
 
-                e = []
+                e: List[str] = []
                 e.append(
                     f"Violation of type {norm(results.value(r, SH.sourceConstraintComponent))}:"
                 )
@@ -301,21 +322,26 @@ class ValidationResult:
             print(result)  # prints the errors, one per line
     """
 
-    errors: list = field(default_factory=list)
+    errors: List[ValidationError] = field(default_factory=list)
 
     @property
-    def valid(self):
+    def valid(self) -> bool:
         """True when no validation errors were found."""
         return not self.errors
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return self.valid
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "\n".join(str(e) for e in self.errors)
 
 
-def validate(sources, *, version=None, check_merged=False):
+def validate(
+    sources: Union[str, Iterable[str]],
+    *,
+    version: Union[str, SpdxVersion, None] = None,
+    check_merged: bool = False,
+) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
     Args:
@@ -339,38 +365,43 @@ def validate(sources, *, version=None, check_merged=False):
     if isinstance(sources, str):
         sources = [sources]
 
-    version = _resolve_version(version)
+    resolved_version = _resolve_version(version)
 
-    documents = []
+    documents: List[Document] = []
     for source in sources:
         doc = Document.load(source)
-        if version is None:
-            version = doc.version
-        elif doc.version != version:
+        if resolved_version is None:
+            resolved_version = doc.version
+        elif doc.version != resolved_version:
             raise SpdxValidateError(
                 f"{source} has incompatible version {doc.version.pretty}. "
-                f"Other documents are {version.pretty}"
+                f"Other documents are {resolved_version.pretty}"
             )
         documents.append(doc)
 
     if not documents:
         return ValidationResult()
 
-    schema, shacl_graph = load_validation_data(version)
+    # documents is non-empty, so the loop above set resolved_version at least once.
+    assert resolved_version is not None
+
+    schema, shacl_graph = load_validation_data(resolved_version)
 
     try:
         validator = schema_validator(schema)
     except jsonschema.exceptions.SchemaError as e:
-        raise SpdxValidateError(f"Invalid schema {version.schema_url}: {e}") from e
+        raise SpdxValidateError(
+            f"Invalid schema {resolved_version.schema_url}: {e}"
+        ) from e
 
-    errors = []
+    errors: List[ValidationError] = []
     for doc in documents:
         errors.extend(
             _schema_error(doc.source, e) for e in validator.iter_errors(doc.data)
         )
         errors.extend(
             ValidationError(doc.source, "shacl", msg)
-            for msg in check_graph(doc.graph, shacl_graph, version, True)
+            for msg in check_graph(doc.graph, shacl_graph, resolved_version, True)
         )
 
     if len(documents) > 1 and check_merged and not errors:
@@ -379,7 +410,7 @@ def validate(sources, *, version=None, check_merged=False):
             merged += doc.graph
         errors.extend(
             ValidationError("(merged)", "shacl", msg)
-            for msg in check_graph(merged, shacl_graph, version, False)
+            for msg in check_graph(merged, shacl_graph, resolved_version, False)
         )
 
     return ValidationResult(errors)

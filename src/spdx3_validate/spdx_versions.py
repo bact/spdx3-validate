@@ -3,17 +3,24 @@
 # SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
-from collections import namedtuple
+from __future__ import annotations
 
-from rdflib import RDF, URIRef
+from typing import Callable, Iterator, NamedTuple, Optional
 
-SpdxVersion = namedtuple(
-    "SpdxVersion",
-    ["context_url", "shacl_url", "schema_url", "pretty", "rdf_base", "get_imports"],
-)
+from rdflib import RDF, Graph, URIRef
+from rdflib.term import Node
 
 
-def get_3_0_0_imports(graph):
+class SpdxVersion(NamedTuple):
+    context_url: str
+    shacl_url: str
+    schema_url: str
+    pretty: str
+    rdf_base: str
+    get_imports: Callable[[Graph], Iterator[Node]]
+
+
+def get_3_0_0_imports(graph: Graph) -> Iterator[Node]:
     RDF_BASE = URIRef("https://spdx.org/rdf/3.0.0/terms/")
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
@@ -22,7 +29,7 @@ def get_3_0_0_imports(graph):
                 yield spdxid
 
 
-def get_3_0_1_imports(graph):
+def get_3_0_1_imports(graph: Graph) -> Iterator[Node]:
     RDF_BASE = URIRef("https://spdx.org/rdf/3.0.1/terms/")
 
     for doc in graph.subjects(RDF.type, RDF_BASE + "Core/SpdxDocument"):
@@ -51,7 +58,7 @@ SPDX_VERSIONS = (
 )
 
 
-def find_version(context_url):
+def find_version(context_url: str) -> Optional[SpdxVersion]:
     for s in SPDX_VERSIONS:
         if s.context_url == context_url:
             return s
