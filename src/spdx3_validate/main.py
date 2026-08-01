@@ -1,11 +1,13 @@
 # SPDX-FileContributor: Joshua Watt
-# SPDX-FileCopyrightText: 2024 Joshua Watt
+# SPDX-FileContributor: Arthit Suriyawongkul
+# SPDX-FileCopyrightText: 2024-2026 Joshua Watt
 # SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
@@ -26,15 +28,29 @@ from .core import (
 )
 
 
-def load_cli_document(source: str) -> Document:
+def load_cli_document(
+    source: str,
+    *,
+    context_urls: Optional[List[str]] = None,
+    model_dir: Optional[str] = None,
+) -> Document:
     """Load a document from a path, URL, or ``"-"`` for standard input.
 
     Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
     command-line convention (not a library one) for reading from stdin.
     """
     if source == "-":
-        return Document.from_text(source, sys.stdin.read())
-    return Document.load(source)
+        return Document.from_text(
+            source,
+            sys.stdin.read(),
+            context_urls=context_urls,
+            model_dir=model_dir,
+        )
+    return Document.load(
+        source,
+        context_urls=context_urls,
+        model_dir=model_dir,
+    )
 
 
 def iter_validation_errors(
@@ -110,7 +126,10 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         "-s",
         default="auto",
         choices=[v.pretty for v in SPDX_VERSIONS] + ["auto"],
-        help="SPDX Version to use, or 'auto' to determine version from input files",
+        help=(
+            "SPDX version to use, or 'auto' to determine version "
+            "from input files"
+        ),
     )
     parser.add_argument(
         "--version",
@@ -130,11 +149,64 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Run quietly (do not show progress)",
     )
+    parser.add_argument(
+        "--schema",
+        action="append",
+        help=(
+            "Location of JSON Schema for validation "
+            "(can be specified multiple times)"
+        ),
+    )
+    parser.add_argument(
+        "--shapes",
+        action="append",
+        help=(
+            "Location of RDF model containing SHACL shapes "
+            "(can be specified multiple times)"
+        ),
+    )
+    parser.add_argument(
+        "--context",
+        action="append",
+        help=(
+            "Location of JSON-LD @context "
+            "(can be specified multiple times)"
+        ),
+    )
     args = parser.parse_args(cmdline_args)
 
-    current_version = None if args.spdx_version == "auto" else args.spdx_version
+    if args.schema and len(args.schema) > 1:
+        print(
+            "WARNING: Multiple --schema options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
+    if args.shapes and len(args.shapes) > 1:
+        print(
+            "WARNING: Multiple --shapes options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
+    if args.context and len(args.context) > 1:
+        print(
+            "WARNING: Multiple --context options are not supported yet. "
+            "Only the first one will be used.",
+            file=sys.stderr,
+        )
 
-    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+    current_version = None if args.spdx_version == "auto" else args.spdx_version
+    model_dir = os.environ.get("SPDX3VALIDATE_MODEL_DIR")
+
+    return spdx3validate(
+        args.json,
+        current_version,
+        args.check_merged,
+        args.quiet,
+        schema_urls=args.schema,
+        shacl_urls=args.shapes,
+        context_urls=args.context,
+        model_dir=model_dir,
+    )
 
 
 def spdx3validate(
@@ -142,6 +214,10 @@ def spdx3validate(
     current_version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
     quiet: bool = True,
+    schema_urls: Optional[List[str]] = None,
+    shacl_urls: Optional[List[str]] = None,
+    context_urls: Optional[List[str]] = None,
+    model_dir: Optional[str] = None,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
@@ -153,7 +229,11 @@ def spdx3validate(
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
-                doc = load_cli_document(j)
+                doc = load_cli_document(
+                    j,
+                    context_urls=context_urls,
+                    model_dir=model_dir,
+                )
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -164,7 +244,8 @@ def spdx3validate(
             elif resolved_version != doc.version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {resolved_version.pretty}"
+                    f"{j} has incompatible version {doc.version.pretty}. "
+                    f"Other documents are {resolved_version.pretty}"
                 )
                 return 1
 
@@ -175,14 +256,25 @@ def spdx3validate(
         # Nothing to do
         return 0
 
-    # documents is non-empty, so the loop above set resolved_version at least once.
-    assert resolved_version is not None
+    if resolved_version is None:
+        print("ERROR: Unable to determine SPDX version")
+        return 1
 
     with halo.Halo(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
-        schema, shacl_graph = load_validation_data(resolved_version)
-        spinner.succeed()
+        try:
+            schema, shacl_graph = load_validation_data(
+                resolved_version,
+                schema_urls=schema_urls,
+                shacl_urls=shacl_urls,
+                model_dir=model_dir,
+            )
+            spinner.succeed()
+        except SpdxValidateError as e:
+            spinner.fail()
+            print(str(e))
+            return 1
 
     errors = 0
 

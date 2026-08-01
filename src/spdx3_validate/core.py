@@ -15,6 +15,7 @@ top of these primitives.
 
 from __future__ import annotations
 
+import copy
 import json
 import textwrap
 import urllib.request
@@ -37,6 +38,10 @@ class SpdxValidateError(Exception):
 
 class UnknownVersionError(SpdxValidateError):
     """The requested SPDX version, or a document's ``@context``, is unknown."""
+
+
+class ResourceNotFoundError(SpdxValidateError, FileNotFoundError):
+    """A required schema, shape, or context file was not found."""
 
 
 @dataclass
@@ -79,11 +84,19 @@ def _resolve_version(
 def read_location(location: str) -> str:
     """Read the contents of a path or an URL."""
     if "://" in location:
-        with urllib.request.urlopen(location) as f:
-            content: bytes = f.read()
-            return content.decode("utf-8")
-    with Path(location).open("r", encoding="utf-8") as f:
-        return f.read()
+        try:
+            with urllib.request.urlopen(location) as f:
+                content: bytes = f.read()
+                return content.decode("utf-8")
+        except OSError as e:
+            raise ResourceNotFoundError(
+                f"Failed to read URL {location}: {e}"
+            ) from e
+    try:
+        with Path(location).open("r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError as e:
+        raise ResourceNotFoundError(f"File not found: {location}") from e
 
 
 @dataclass
@@ -105,27 +118,52 @@ class Document:
     version: SpdxVersion
 
     @classmethod
-    def load(cls, source: str) -> Document:
+    def load(
+        cls,
+        source: str,
+        *,
+        context_urls: Optional[List[str]] = None,
+        model_dir: Optional[str] = None,
+    ) -> Document:
         """Load and parse an SPDX 3 document from a path or URL.
 
         Raises:
             SpdxValidateError: The document has no ``@context``.
             UnknownVersionError: The ``@context`` is not a known SPDX version.
+            ResourceNotFoundError: The input document file or local context
+                file does not exist.
         """
-        return cls.from_text(source, read_location(source))
+        return cls.from_text(
+            source,
+            read_location(source),
+            context_urls=context_urls,
+            model_dir=model_dir,
+        )
 
     @classmethod
-    def from_text(cls, source: str, text: str) -> Document:
+    def from_text(
+        cls,
+        source: str,
+        text: str,
+        *,
+        context_urls: Optional[List[str]] = None,
+        model_dir: Optional[str] = None,
+    ) -> Document:
         """Parse an SPDX 3 document already held in memory.
 
         Args:
             source: A label identifying the document (e.g. a filename), used
                 only to attribute errors to it.
             text: The raw JSON-LD document content.
+            context_urls: Optional list of local file paths or URLs for
+                @context.
+            model_dir: Optional model directory containing
+                v[VERSION]/spdx-context.jsonld.
 
         Raises:
             SpdxValidateError: The document has no ``@context``.
             UnknownVersionError: The ``@context`` is not a known SPDX version.
+            ResourceNotFoundError: A specified context file does not exist.
         """
         data = json.loads(text)
 
@@ -138,22 +176,127 @@ class Document:
                 f"{source} has unknown version @context {data['@context']}"
             )
 
+        actual_context_url: Optional[str] = None
+        if context_urls:
+            actual_context_url = context_urls[0]
+            if ("://" not in actual_context_url) and (
+                not Path(actual_context_url).is_file()
+            ):
+                raise ResourceNotFoundError(
+                    "Specified context file does not exist: "
+                    f"{actual_context_url}"
+                )
+        elif model_dir:
+            target_path = (
+                Path(model_dir) / f"v{version.pretty}" / "spdx-context.jsonld"
+            )
+            if not target_path.is_file():
+                raise ResourceNotFoundError(
+                    f"JSON-LD context file {target_path.name} not found "
+                    f"in SPDX3VALIDATE_MODEL_DIR at {target_path}"
+                )
+            actual_context_url = str(target_path)
+
         graph = rdflib.Graph()
-        graph.parse(data=text, format="json-ld")
+        if actual_context_url:
+            if "://" in actual_context_url:
+                with urllib.request.urlopen(actual_context_url) as f:
+                    ctx_obj = json.load(f)
+            else:
+                with open(actual_context_url, "r", encoding="utf-8") as f:
+                    ctx_obj = json.load(f)
+
+            ctx_data = copy.deepcopy(data)
+            if "@context" in ctx_obj:
+                ctx_data["@context"] = ctx_obj["@context"]
+            else:
+                ctx_data["@context"] = ctx_obj
+            graph.parse(data=json.dumps(ctx_data), format="json-ld")
+        else:
+            graph.parse(data=text, format="json-ld")
 
         return cls(source, data, graph, version)
 
 
-def load_validation_data(version: SpdxVersion) -> Tuple[Dict[str, Any], rdflib.Graph]:
-    """Download the JSON Schema and SHACL model for an SPDX *version*.
+def load_validation_data(
+    version: SpdxVersion,
+    *,
+    schema_urls: Optional[List[str]] = None,
+    shacl_urls: Optional[List[str]] = None,
+    model_dir: Optional[str] = None,
+) -> Tuple[Dict[str, Any], rdflib.Graph]:
+    """Load the JSON Schema and SHACL model for an SPDX *version*.
+
+    Resolution precedence for each resource:
+    explicit parameter (`schema_urls` / `shacl_urls`) > `model_dir`
+    > network default.
+
+    Args:
+        version: The SPDX version to load models for.
+        schema_urls: Optional list of local file paths or URLs for JSON Schema.
+            Takes precedence over `model_dir`.
+        shacl_urls: Optional list of local file paths or URLs for SHACL shapes.
+            Takes precedence over `model_dir`.
+        model_dir: Optional directory containing versioned models (v[VERSION]/).
+            Used if explicit resource lists are omitted.
 
     Returns a ``(schema, shacl_graph)`` tuple.
+
+    Raises:
+        ResourceNotFoundError: A specified or expected schema or SHACL file
+            does not exist.
     """
-    with urllib.request.urlopen(version.schema_url) as f:
-        schema = json.load(f)
+    if schema_urls:
+        actual_schema_url = schema_urls[0]
+        if (
+            "://" not in actual_schema_url
+            and not Path(actual_schema_url).is_file()
+        ):
+            raise ResourceNotFoundError(
+                f"Specified schema file does not exist: {actual_schema_url}"
+            )
+    elif model_dir:
+        target_path = (
+            Path(model_dir) / f"v{version.pretty}" / "spdx-json-schema.json"
+        )
+        if not target_path.is_file():
+            raise ResourceNotFoundError(
+                f"Schema file {target_path.name} not found in "
+                f"SPDX3VALIDATE_MODEL_DIR at {target_path}"
+            )
+        actual_schema_url = str(target_path)
+    else:
+        actual_schema_url = version.schema_url
+
+    if shacl_urls:
+        actual_shacl_url = shacl_urls[0]
+        if (
+            "://" not in actual_shacl_url
+            and not Path(actual_shacl_url).is_file()
+        ):
+            raise ResourceNotFoundError(
+                f"Specified shapes file does not exist: {actual_shacl_url}"
+            )
+    elif model_dir:
+        target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-model.ttl"
+        if not target_path.is_file():
+            raise ResourceNotFoundError(
+                f"SHACL shapes file {target_path.name} not found in "
+                f"SPDX3VALIDATE_MODEL_DIR at {target_path}"
+            )
+        actual_shacl_url = str(target_path)
+    else:
+        actual_shacl_url = version.shacl_url
+
+    if "://" in actual_schema_url:
+        with urllib.request.urlopen(actual_schema_url) as f:
+            schema = json.load(f)
+    else:
+        with open(actual_schema_url, "r", encoding="utf-8") as f:
+            schema = json.load(f)
 
     shacl_graph = rdflib.Graph()
-    shacl_graph.parse(version.shacl_url)
+    shacl_graph.parse(actual_shacl_url)
 
     return schema, shacl_graph
 
@@ -225,7 +368,8 @@ def check_graph(
         nm = rdflib.namespace.NamespaceManager(results)
 
         def norm(uri: Optional[Node]) -> str:
-            assert uri is not None
+            if uri is None:
+                return "-"
             return nm.normalizeUri(str(uri))
 
         def pnode(n: Optional[Node]) -> str:
@@ -343,8 +487,16 @@ def validate(
     *,
     version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
+    schema_urls: Optional[List[str]] = None,
+    shacl_urls: Optional[List[str]] = None,
+    context_urls: Optional[List[str]] = None,
+    model_dir: Optional[str] = None,
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
+
+    Resolution precedence for each resource (`schema`, `shapes`, `context`):
+    explicit list (`schema_urls`, `shacl_urls`, `context_urls`)
+    > `model_dir` > network default.
 
     Args:
         sources: A single path or URL, or an iterable of them.
@@ -354,6 +506,14 @@ def validate(
         check_merged: Also validate the graph formed by merging every document,
             which catches type errors across ``ExternalMap`` references. Skipped
             if any document already failed.
+        schema_urls: Optional list of local file paths or URLs for JSON Schema.
+            Takes precedence over `model_dir`.
+        shacl_urls: Optional list of local file paths or URLs for SHACL shapes.
+            Takes precedence over `model_dir`.
+        context_urls: Optional list of local file paths or URLs for JSON-LD
+            @context. Takes precedence over `model_dir`.
+        model_dir: Optional directory containing versioned models (v[VERSION]/).
+            Used for any resources not explicitly overridden above.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -363,6 +523,8 @@ def validate(
         SpdxValidateError: A document cannot be loaded, or documents declare
             incompatible versions.
         UnknownVersionError: *version* or a document ``@context`` is unknown.
+        ResourceNotFoundError: A specified or expected model/context file does
+            not exist.
     """
     if isinstance(sources, str):
         sources = [sources]
@@ -371,7 +533,11 @@ def validate(
 
     documents: List[Document] = []
     for source in sources:
-        doc = Document.load(source)
+        doc = Document.load(
+            source,
+            context_urls=context_urls,
+            model_dir=model_dir,
+        )
         if resolved_version is None:
             resolved_version = doc.version
         elif doc.version != resolved_version:
@@ -384,10 +550,15 @@ def validate(
     if not documents:
         return ValidationResult()
 
-    # documents is non-empty, so the loop above set resolved_version at least once.
-    assert resolved_version is not None
+    if resolved_version is None:
+        raise SpdxValidateError("Unable to determine SPDX version")
 
-    schema, shacl_graph = load_validation_data(resolved_version)
+    schema, shacl_graph = load_validation_data(
+        resolved_version,
+        schema_urls=schema_urls,
+        shacl_urls=shacl_urls,
+        model_dir=model_dir,
+    )
 
     try:
         validator = schema_validator(schema)
