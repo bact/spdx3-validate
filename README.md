@@ -124,17 +124,19 @@ Missing local model files raise `spdx3_validate.ResourceNotFoundError`.
 
 ### Order of precedence
 
-For each validation resource (`schema`, `shapes`, `context`),
+For each validation resource (JSON schema, SHACL shapes, JSON-LD context),
 `spdx3-validate` evaluates resolution independently in strict order:
 
-1. **Explicit Parameters / CLI Flags (`schema_urls`, `shacl_urls`, `context_urls` / `--schema`, `--shapes`, `--context`)**:
+1. **Explicit parameters / CLI flags**
+   (`schema_urls`, `shacl_urls`, `context_urls` /
+   `--schema`, `--shapes`, `--context`):
    Used exclusively if provided.
    Raises `ResourceNotFoundError` if the specified local file does not exist.
-2. **Model Directory (`model_dir` / `SPDX3VALIDATE_MODEL_DIR`)**:
+2. **Model directory (`model_dir` / `SPDX3VALIDATE_MODEL_DIR`)**:
    Evaluated if explicit parameters or CLI flags are omitted.
    Looks for `<model_dir>/v[VERSION]/[file]`.
    Raises `ResourceNotFoundError` if the expected model file is missing.
-3. **Network Default**:
+3. **Network default**:
    Used only when neither explicit parameters, CLI flags, nor model directory
    are specified.
 
