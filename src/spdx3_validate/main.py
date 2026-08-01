@@ -1,160 +1,60 @@
-# Copyright (c) 2024 Joshua Watt
-#
+# SPDX-FileContributor: Joshua Watt
+# SPDX-FileCopyrightText: 2024 Joshua Watt
+# SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
 
+from __future__ import annotations
+
 import argparse
-import halo
-import json
-import jsonschema
-import pyshacl
-import rdflib
 import sys
-import textwrap
-import urllib.request
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
-from rdflib import RDF, RDFS, SH, URIRef
+import halo
+import jsonschema
+import rdflib
 
-from pathlib import Path
 from .version import VERSION
-from .spdx_versions import find_version, SPDX_VERSIONS
+from .spdx_versions import SPDX_VERSIONS, SpdxVersion
+from .core import (
+    Document,
+    SpdxValidateError,
+    UnknownVersionError,
+    check_graph,
+    load_validation_data,
+    schema_validator,
+    _resolve_version,
+)
 
 
-def read_location(location):
-    if "://" in location:
-        with urllib.request.urlopen(location) as f:
-            return f.read()
-    elif location == "-":
-        return sys.stdin.read()
-    else:
-        with Path(location).open("r") as f:
-            return f.read()
+def load_cli_document(source: str) -> Document:
+    """Load a document from a path, URL, or ``"-"`` for standard input.
+
+    Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
+    command-line convention (not a library one) for reading from stdin.
+    """
+    if source == "-":
+        return Document.from_text(source, sys.stdin.read())
+    return Document.load(source)
 
 
-def derives_from(cls, target, shacl_graph):
-    if cls == target:
-        return True
-
-    for subclass in shacl_graph.objects(cls, RDFS.subClassOf):
-        if derives_from(subclass, target, shacl_graph):
-            return True
-
-    return False
-
-
-def check_graph(graph, shacl_graph, current_version, error_external):
-    errors = []
-
-    conforms, results, _ = pyshacl.validate(
-        graph,
-        shacl_graph=shacl_graph,
-        ont_graph=shacl_graph,
-    )
-
-    if not conforms:
-        results.bind("sh", SH)
-        nm = rdflib.namespace.NamespaceManager(results)
-
-        def norm(uri):
-            return nm.normalizeUri(uri)
-
-        def pnode(n):
-            if n:
-                return n.n3()
-            return "-"
-
-        # Collect all external map references
-        external_spdxids = set()
-        for spdxid in current_version.get_imports(graph):
-            # If the SpdxID is in the graph as a subject, than do
-            # not mark it as an external SpdxID, since there is a
-            # resolved definition for it
-            if (spdxid, None, None) in graph:
-                if error_external:
-                    errors.append(
-                        f"ERROR: {str(spdxid)} in an ExternalMap and also defined in the document"
-                    )
-            else:
-                external_spdxids.add(str(spdxid))
-
-        def check_external_ref_error(r):
-            nonlocal results
-            nonlocal shacl_graph
-            nonlocal graph
-            nonlocal external_spdxids
-
-            if (r, RDF.type, SH.ValidationResult) not in results:
-                return False
-
-            if (r, SH.resultSeverity, SH.Violation) not in results:
-                return False
-
-            if (
-                r,
-                SH.sourceConstraintComponent,
-                SH.ClassConstraintComponent,
-            ) not in results:
-                return False
-
-            is_element = False
-            for ss in results.objects(r, SH.sourceShape):
-                if is_element:
-                    break
-
-                for cls in results.objects(ss, SH["class"]):
-                    is_element = derives_from(
-                        cls,
-                        URIRef(current_version.rdf_base + "Core/Element"),
-                        shacl_graph,
-                    )
-                    if is_element:
-                        break
-
-            if not is_element:
-                return False
-
-            for v in results.objects(r, SH.value):
-                if str(v) in external_spdxids:
-                    return True
-
-            return False
-
-        for report in results.subjects(RDF.type, SH.ValidationReport):
-            for r in results.objects(report, SH.result):
-                if check_external_ref_error(r):
-                    continue
-
-                e = []
-                e.append(
-                    f"Violation of type {norm(results.value(r, SH.sourceConstraintComponent))}:"
-                )
-                e.append(f"\tSeverity: {norm(results.value(r, SH.resultSeverity))}")
-                pg = rdflib.Graph()
-                pg += results.triples((results.value(r, SH.sourceShape), None, None))
-                if pg:
-                    e.append("\tSource Shape:")
-                    e.append(
-                        textwrap.indent(pg.serialize(format="ttl").strip(), "\t\t")
-                    )
-                e.append(f"\tFocus Node: {pnode(results.value(r, SH.focusNode))}")
-                e.append(f"\tValue Node: {pnode(results.value(r, SH.value))}")
-                e.append(f"\tResult path: {pnode(results.value(r, SH.resultPath))}")
-                e.append(f"\tMessage: {results.value(r, SH.resultMessage) or '-'}")
-                e.append("")
-
-                errors.append("\n".join(e))
-
-    return errors
-
-
-def iter_validation_errors(err):
+def iter_validation_errors(
+    err: jsonschema.exceptions.ValidationError,
+) -> Iterator[jsonschema.exceptions.ValidationError]:
     if err.context:
         for e in err.context:
             yield e
             yield from iter_validation_errors(e)
 
 
-def print_schema_error(err, filename, indent=0):
-    def print_err(e, indent, fn=None, message=False):
+def print_schema_error(
+    err: jsonschema.exceptions.ValidationError, filename: str, indent: int = 0
+) -> None:
+    def print_err(
+        e: jsonschema.exceptions.ValidationError,
+        indent: int,
+        fn: Optional[str] = None,
+        message: bool = False,
+    ) -> None:
         loc = e.json_path
         if fn:
             loc = f"{fn}::{loc}"
@@ -172,7 +72,7 @@ def print_schema_error(err, filename, indent=0):
         i_str = " " * (indent + 2)
         print(i_str + "This error was caused by other underlying errors:")
 
-        error_map = {}
+        error_map: Dict[Any, jsonschema.exceptions.ValidationError] = {}
         for e in iter_validation_errors(err):
             if isinstance(e, str):
                 error_map[(tuple(e.absolute_path), e.message)] = e
@@ -193,7 +93,7 @@ def print_schema_error(err, filename, indent=0):
     print()
 
 
-def main(cmdline_args=None):
+def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=f"Validate SPDX 3 files Version {VERSION}"
     )
@@ -232,117 +132,114 @@ def main(cmdline_args=None):
     )
     args = parser.parse_args(cmdline_args)
 
-    if args.spdx_version != "auto":
-        for v in SPDX_VERSIONS:
-            if v.pretty == args.version:
-                current_version = v
-                break
-        else:
-            print(f"Unknown SPDX version {args.version}")
-            return 1
-    else:
-        current_version = None
+    current_version = None if args.spdx_version == "auto" else args.spdx_version
 
-    files = []
-    for j in args.json:
-        with halo.Halo(f"Loading {j}", enabled=not args.quiet) as spinner:
-            s = read_location(j)
-            d = json.loads(s)
-            if "@context" not in d:
+    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+
+
+def spdx3validate(
+    json_files: List[str],
+    current_version: Union[str, SpdxVersion, None] = None,
+    check_merged: bool = False,
+    quiet: bool = True,
+) -> int:
+    try:
+        resolved_version = _resolve_version(current_version)
+    except UnknownVersionError as e:
+        print(str(e))
+        return 1
+
+    documents: List[Document] = []
+    for j in json_files:
+        with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
+            try:
+                doc = load_cli_document(j)
+            except SpdxValidateError as e:
                 spinner.fail()
-                print(f"No @context found in {j}")
+                print(str(e))
                 return 1
 
-            version = find_version(d["@context"])
-            if version is None:
-                spinner.fail()
-                print(f"{j} has unknown version @context {d['@context']}")
-                return 1
-
-            if current_version is None:
-                current_version = version
-            elif current_version != version:
+            if resolved_version is None:
+                resolved_version = doc.version
+            elif resolved_version != doc.version:
                 spinner.fail()
                 print(
-                    f"{j} has incompatible version {version.pretty}. Other documents are {current_version.pretty}"
+                    f"{j} has incompatible version {doc.version.pretty}. Other documents are {resolved_version.pretty}"
                 )
                 return 1
 
-            graph = rdflib.Graph()
-            graph.parse(data=s, format="json-ld")
-
-            files.append((j, d, graph))
+            documents.append(doc)
             spinner.succeed()
 
-    if not files:
+    if not documents:
         # Nothing to do
         return 0
 
-    with halo.Halo(
-        f"Loading SPDX {current_version.pretty}", enabled=not args.quiet
-    ) as spinner:
-        with urllib.request.urlopen(current_version.schema_url) as f:
-            schema = json.load(f)
+    # documents is non-empty, so the loop above set resolved_version at least once.
+    assert resolved_version is not None
 
-        shacl_graph = rdflib.Graph()
-        shacl_graph.parse(current_version.shacl_url)
+    with halo.Halo(
+        f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
+    ) as spinner:
+        schema, shacl_graph = load_validation_data(resolved_version)
         spinner.succeed()
 
     errors = 0
 
-    for fn, json_data, g in files:
+    for doc in documents:
         with halo.Halo(
-            f"Validating schema for {fn}", enabled=not args.quiet
+            f"Validating schema for {doc.source}", enabled=not quiet
         ) as spinner:
-            validator_cls = jsonschema.validators.validator_for(schema)
-
             try:
-                validator_cls.check_schema(schema)
+                validator = schema_validator(schema)
             except jsonschema.exceptions.SchemaError as e:
-                spinner.fail(f"Invalid schema {current_version.schema_url}: {e}")
+                spinner.fail(f"Invalid schema {resolved_version.schema_url}: {e}")
                 return 1
 
-            validator = validator_cls(schema)
-            json_errors = list(validator.iter_errors(json_data))
+            json_errors = list(validator.iter_errors(doc.data))
             if json_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
         if json_errors:
-            print(f"ERROR: JSON Schema validation failed for {fn}:")
-            for e in json_errors:
-                print_schema_error(e, fn)
+            print(f"ERROR: JSON Schema validation failed for {doc.source}:")
+            for json_err in json_errors:
+                print_schema_error(json_err, doc.source)
                 errors += 1
 
-        with halo.Halo(f"Checking SHACL for {fn}", enabled=not args.quiet) as spinner:
-            e = check_graph(g, shacl_graph, current_version, True)
-            if e:
+        with halo.Halo(
+            f"Checking SHACL for {doc.source}", enabled=not quiet
+        ) as spinner:
+            graph_errors = check_graph(doc.graph, shacl_graph, resolved_version, True)
+            if graph_errors:
                 spinner.fail()
             else:
                 spinner.succeed()
 
-        if e:
-            print(f"ERROR: SHACL Validation failed for {fn}:")
-            print("\n".join(e))
+        if graph_errors:
+            print(f"ERROR: SHACL Validation failed for {doc.source}:")
+            print("\n".join(graph_errors))
             errors += 1
 
-    if len(files) > 1 and args.check_merged:
+    if len(documents) > 1 and check_merged:
         if not errors:
-            with halo.Halo("Checking merged graph", enabled=not args.quiet) as spinner:
+            with halo.Halo("Checking merged graph", enabled=not quiet) as spinner:
                 merged_g = rdflib.Graph()
-                for _, _, g in files:
-                    merged_g += g
+                for doc in documents:
+                    merged_g += doc.graph
 
-                e = check_graph(g, shacl_graph, current_version, False)
-                if e:
+                graph_errors = check_graph(
+                    merged_g, shacl_graph, resolved_version, False
+                )
+                if graph_errors:
                     spinner.fail()
                 else:
                     spinner.succeed()
 
-            if e:
+            if graph_errors:
                 print("ERROR: SHACL Validation failed on merged files:")
-                print("\n".join(e))
+                print("\n".join(graph_errors))
                 errors += 1
         else:
             print(

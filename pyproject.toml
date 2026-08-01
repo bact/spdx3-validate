@@ -24,13 +24,17 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 
 [project.optional-dependencies]
 dev = [
     "flake8 >= 7.0.0",
+    "mypy >= 1.11",
     "pytest >= 7.4",
     "pytest-cov >= 4.1",
+    "types-jsonschema >= 4.21",
 ]
 
 [project.urls]
@@ -39,7 +43,7 @@ Repository = "https://github.com/JPEWdev/spdx3-validate.git"
 Issues = "https://github.com/JPEWdev/spdx3-validate/issues"
 
 [project.scripts]
-spdx3-validate = "spdx3_validate:main"
+spdx3-validate = "spdx3_validate.main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -49,10 +53,22 @@ build-backend = "hatchling.build"
 path = "src/spdx3_validate/version.py"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 addopts = [
     "--import-mode=importlib",
-    "--cov=shacl2code",
+    "--cov=spdx3_validate",
 ]
 
 [tool.coverage.run]
 relative_files = true
+
+[tool.mypy]
+# This for mypy's target, not requires-python
+# mypy minimum supported version is 3.10
+python_version = "3.10"
+files = ["src"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["halo.*"]
+ignore_missing_imports = true

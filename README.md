@@ -56,6 +56,31 @@ options:
   --quiet, -q           Run quietly (do not show progress)
 ```
   
+## Using as a library
+
+`spdx3-validate` can also be used programmatically.
+`validate()` takes a single source or an iterable of sources
+(a path or a URL) and returns a `ValidationResult`:
+
+```python
+import spdx3_validate
+
+result = spdx3_validate.validate("doc.spdx3.json")
+if not result:
+    print(result)  # prints the errors, one per line
+
+# Or inspect the individual findings:
+for error in result.errors:
+    print(error)
+```
+
+- The SPDX version is detected from each document's `@context`;
+  pass `version="X.Y"` to force one.
+- Set `check_merged=True` to also validate the merged graph of several
+  documents together.
+- A document that cannot be loaded (missing `@context`, unknown version,
+  incompatible versions) raises `spdx3_validate.SpdxValidateError`.
+
 ## Developing
 
 Developing on `spdx3-validate` is best done using a virtual environment. You
@@ -70,5 +95,6 @@ pip install -e ".[dev]"
 
 ## TODO
 
-* Option to automatically download dependencies based on `locationHint`
-* Offline validation?
+- Option to automatically download dependencies based on `locationHint`
+- Offline validation?
+- Cache downloaded context
