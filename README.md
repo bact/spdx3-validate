@@ -23,6 +23,20 @@ useful. This includes:
 python3 -m pip install spdx3-validate
 ```
 
+## Usage
+
+```shell
+spdx3-validate -j sbom.json
+```
+
+### Options
+
+All available options can be listed by this command:
+
+```shell
+spdx3-validate -h
+```
+
 ## Using as a library
 
 `spdx3-validate` can also be used programmatically.
@@ -59,7 +73,10 @@ You can explicitly specify local paths or URLs for the JSON Schema,
 SHACL shapes, and JSON-LD @context:
 
 ```shell
-spdx3-validate -j document.json --schema /path/to/spdx-json-schema.json --shapes /path/to/spdx-model.ttl --context /path/to/spdx-context.jsonld
+spdx3-validate --json document.json \
+  --schema /path/to/spdx-json-schema.json \
+  --shapes /path/to/spdx-model.ttl \
+  --context /path/to/spdx-context.jsonld
 ```
 
 ### Environment variable (`SPDX3VALIDATE_MODEL_DIR`)
