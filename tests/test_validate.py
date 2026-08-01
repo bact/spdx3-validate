@@ -13,9 +13,7 @@ import spdx3_validate
 
 DATA_DIR = Path(__file__).parent / "data"
 VALID_DOC = DATA_DIR / "3.0.1" / "valid" / "package_sbom.json"
-INVALID_DOC = (
-    DATA_DIR / "3.0.1" / "invalid" / "package_sbom_missing_creationinfo.json"
-)
+INVALID_DOC = DATA_DIR / "3.0.1" / "invalid" / "package_sbom_missing_creationinfo.json"
 
 
 # --- Library API: validate() -------------------------------------------------
@@ -152,9 +150,7 @@ def test_document_from_text_local_context(tmp_path: Path) -> None:
     """Document.from_text uses local spdx-context.jsonld (no network)."""
     context_file = tmp_path / "spdx-context.jsonld"
     context_file.write_text(
-        json.dumps(
-            {"@context": {"@vocab": "https://spdx.org/rdf/3.0.1/terms/"}}
-        ),
+        json.dumps({"@context": {"@vocab": "https://spdx.org/rdf/3.0.1/terms/"}}),
         encoding="utf-8",
     )
 
@@ -269,11 +265,5 @@ def test_cli_multiple_schema_shapes_warning(
     assert rc == 0
 
     captured = capsys.readouterr()
-    assert (
-        "WARNING: Multiple --schema options are not supported yet."
-        in captured.err
-    )
-    assert (
-        "WARNING: Multiple --shapes options are not supported yet."
-        in captured.err
-    )
+    assert "WARNING: Multiple --schema options are not supported yet." in captured.err
+    assert "WARNING: Multiple --shapes options are not supported yet." in captured.err

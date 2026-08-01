@@ -89,9 +89,7 @@ def read_location(location: str) -> str:
                 content: bytes = f.read()
                 return content.decode("utf-8")
         except OSError as e:
-            raise ResourceNotFoundError(
-                f"Failed to read URL {location}: {e}"
-            ) from e
+            raise ResourceNotFoundError(f"Failed to read URL {location}: {e}") from e
     try:
         with Path(location).open("r", encoding="utf-8") as f:
             return f.read()
@@ -183,13 +181,10 @@ class Document:
                 not Path(actual_context_url).is_file()
             ):
                 raise ResourceNotFoundError(
-                    "Specified context file does not exist: "
-                    f"{actual_context_url}"
+                    f"Specified context file does not exist: {actual_context_url}"
                 )
         elif model_dir:
-            target_path = (
-                Path(model_dir) / f"v{version.pretty}" / "spdx-context.jsonld"
-            )
+            target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-context.jsonld"
             if not target_path.is_file():
                 raise ResourceNotFoundError(
                     f"JSON-LD context file {target_path.name} not found "
@@ -248,17 +243,12 @@ def load_validation_data(
     """
     if schema_urls:
         actual_schema_url = schema_urls[0]
-        if (
-            "://" not in actual_schema_url
-            and not Path(actual_schema_url).is_file()
-        ):
+        if "://" not in actual_schema_url and not Path(actual_schema_url).is_file():
             raise ResourceNotFoundError(
                 f"Specified schema file does not exist: {actual_schema_url}"
             )
     elif model_dir:
-        target_path = (
-            Path(model_dir) / f"v{version.pretty}" / "spdx-json-schema.json"
-        )
+        target_path = Path(model_dir) / f"v{version.pretty}" / "spdx-json-schema.json"
         if not target_path.is_file():
             raise ResourceNotFoundError(
                 f"Schema file {target_path.name} not found in "
@@ -270,10 +260,7 @@ def load_validation_data(
 
     if shacl_urls:
         actual_shacl_url = shacl_urls[0]
-        if (
-            "://" not in actual_shacl_url
-            and not Path(actual_shacl_url).is_file()
-        ):
+        if "://" not in actual_shacl_url and not Path(actual_shacl_url).is_file():
             raise ResourceNotFoundError(
                 f"Specified shapes file does not exist: {actual_shacl_url}"
             )

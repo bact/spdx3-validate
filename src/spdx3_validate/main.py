@@ -126,10 +126,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         "-s",
         default="auto",
         choices=[v.pretty for v in SPDX_VERSIONS] + ["auto"],
-        help=(
-            "SPDX version to use, or 'auto' to determine version "
-            "from input files"
-        ),
+        help=("SPDX version to use, or 'auto' to determine version from input files"),
     )
     parser.add_argument(
         "--version",
@@ -168,10 +165,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--context",
         action="append",
-        help=(
-            "Location of JSON-LD @context "
-            "(can be specified multiple times)"
-        ),
+        help=("Location of JSON-LD @context (can be specified multiple times)"),
     )
     args = parser.parse_args(cmdline_args)
 
