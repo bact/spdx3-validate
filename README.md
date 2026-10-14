@@ -81,8 +81,8 @@ given as `version=`) and can be shared between threads; validations running
 during a `reload()` finish on the previous model. It does not re-read its
 resources by itself; call `v.reload()` if the model is served from a moving URL
 (for example a `-dev` build). If the model is marked pre-release, loading
-issues a `FutureWarning`; `v.is_pre_release` reports it and `pre_release=True`
-or `False` overrides it.
+issues a `spdx3_validate.PreReleaseWarning` (a `FutureWarning`); `v.is_pre_release` reports it and `pre_release=True`
+or `False` overrides it (CLI: `--pre-release` / `--no-pre-release`).
 
 ## Offline validation
 

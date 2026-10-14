@@ -11,6 +11,7 @@ from .core import (
     UnknownVersionError,
     ValidationError,
     ValidationResult,
+    PreReleaseWarning,
     Validator,
     validate,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "UnknownVersionError",
     "ValidationError",
     "ValidationResult",
+    "PreReleaseWarning",
     "Validator",
     "__version__",
     "spdx3validate",

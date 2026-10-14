@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.request
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -445,7 +446,9 @@ def test_warning_points_at_caller(entry: str, make_model: MakeModel, make_doc: M
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         calls[entry]()
-    assert [x.filename for x in w if x.category is FutureWarning] == [__file__]
+    assert [
+        x.filename for x in w if x.category is spdx3_validate.PreReleaseWarning
+    ] == [__file__]
 
 
 def test_pre_release_override_suppresses_warning(make_model: MakeModel) -> None:
@@ -463,8 +466,7 @@ def test_cli_honours_warning_filters(action: Literal["ignore", "error"], make_mo
     with warnings.catch_warnings():
         warnings.simplefilter(action, FutureWarning)
         if action == "error":
-            with pytest.raises(FutureWarning):
-                spdx3_validate.spdx3validate([make_doc(GOOD)], model_dir=md, quiet=True)
+            assert spdx3_validate.spdx3validate([make_doc(GOOD)], model_dir=md, quiet=True) == 1  # fmt: skip
         else:
             assert spdx3_validate.spdx3validate([make_doc(GOOD)], model_dir=md, quiet=True) == 0  # fmt: skip
     assert "WARNING" not in capsys.readouterr().err
@@ -487,6 +489,330 @@ def test_real_model_matches_validate() -> None:
     try:
         a = spdx3_validate.Validator().validate(paths)
         b = spdx3_validate.validate(paths)
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, spdx3_validate.ResourceNotFoundError) as e:
         pytest.skip(f"network unavailable: {e}")
     assert _norm(a) == _norm(b) and not a
+
+
+@pytest.mark.parametrize("flag,expect", [(["--pre-release"], True), (["--no-pre-release"], False), ([], None)])  # fmt: skip
+def test_cli_pre_release_flags(flag: Any, expect: Any, monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
+    """The flags reach the Validator as pre_release=True/False/None."""
+    from spdx3_validate import main as cli
+
+    seen: Dict[str, Any] = {}
+    monkeypatch.setattr(cli, "spdx3validate", lambda *a, **k: seen.update(k) or 0)
+    assert cli.main(["-q", "-j", "x"] + flag) == 0
+    assert seen["pre_release"] is expect
+
+
+# --- review regressions ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "props,expected",
+    [
+        (f'{S2C} false ; owl:versionInfo "0.1"', False),
+        (f'{S2C} "yes"', True),
+        (f"{ADMS} {SEMIC}COMPLETED> ; {ADMS} <http://purl.org/adms/status/UnderDevelopment>", False),
+        (f'{VS} "stable" ; owl:versionInfo "3.1-rc1"', False),
+        (f'{ADMS} <http://other/x> ; <http://purl.org/ontology/bibo/status> <http://purl.org/ontology/bibo/status/draft>', True),
+        ('owl:versionInfo " 0.1"', True),
+    ],
+)  # fmt: skip
+def test_pre_release_precedence_conflicts(props: str, expected: bool) -> None:
+    """Higher-precedence annotations beat lower ones."""
+    assert core._is_pre_release(_onto(props)) is expected
+
+
+def test_pre_release_override_true_on_stable_model(make_model: MakeModel) -> None:
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model(), pre_release=True)
+    with pytest.warns(spdx3_validate.PreReleaseWarning):
+        assert v.is_pre_release is True
+
+
+def test_validate_function_accepts_pre_release(make_model: MakeModel, make_doc: MakeDoc) -> None:  # fmt: skip
+    md, doc = make_model(shapes=PRE_SHAPES), make_doc(GOOD)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", spdx3_validate.PreReleaseWarning)
+        assert spdx3_validate.validate(doc, model_dir=md, pre_release=False)
+
+
+def test_unrelated_future_warning_is_not_pre_release_notice(make_model: MakeModel, make_doc: MakeDoc, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:  # fmt: skip
+    """Only PreReleaseWarning prints the pre-release line in the CLI."""
+    from spdx3_validate import main as cli
+
+    orig = core.Validator.load
+
+    def noisy(self: Any, *a: Any, **k: Any) -> Any:
+        warnings.warn("other", FutureWarning)
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(core.Validator, "load", noisy)
+    cli.main(["-q", "-j", make_doc(GOOD), "--model-dir", make_model()])
+    assert "pre-release" not in capsys.readouterr().err
+
+
+def test_reload_picks_up_edited_context(make_model: MakeModel, make_doc: MakeDoc) -> None:  # fmt: skip
+    md = make_model()
+    v = spdx3_validate.Validator(model_dir=md)
+    doc = make_doc(GOOD)
+    assert v.validate(doc)
+    ctx = Path(md) / "v3.0.1" / "spdx-context.jsonld"
+    ctx.write_text(ctx.read_text().replace('"name"', '"nom"'))
+    assert v.validate(doc)  # cached
+    v.reload()
+    assert v._contexts == {}
+
+
+def test_overlapping_reloads_latest_wins(make_model: MakeModel, monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
+    """A slow earlier reload() must not overwrite a later one."""
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model())
+    first = v.load()
+    gate, entered = threading.Event(), threading.Event()
+    orig = v._load_model
+    calls: List[int] = []
+
+    def slow(version: Any) -> Any:
+        calls.append(1)
+        n = len(calls)
+        m = orig(version)
+        if n == 1:
+            entered.set()
+            gate.wait(5)
+        return m
+
+    monkeypatch.setattr(v, "_load_model", slow)
+    t = threading.Thread(target=v.reload)
+    t.start()
+    assert entered.wait(5)
+    v.reload()
+    newest = v.load()
+    gate.set()
+    t.join()
+    assert v.load() is newest and newest is not first
+
+
+def test_warning_handler_may_reenter(make_model: MakeModel) -> None:
+    """A warning hook that touches the validator must not deadlock."""
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model(shapes=PRE_SHAPES))
+    seen: List[bool] = []
+    done = threading.Event()
+
+    def run() -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.showwarning = lambda *a, **k: seen.append(v.is_pre_release)
+            v.load()
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(10) and seen == [True]
+
+
+def test_subclass_cycle_and_deep_json_are_clean(tmp_path: Path) -> None:
+    g = rdflib.Graph().parse(
+        data="@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> . @prefix ex: <http://ex/> . ex:A rdfs:subClassOf ex:B . ex:B rdfs:subClassOf ex:A .",  # noqa: E501
+        format="turtle",
+    )
+    assert core.derives_from(rdflib.URIRef("http://ex/A"), rdflib.URIRef("http://ex/Z"), g) is False  # fmt: skip
+    with pytest.raises(spdx3_validate.SpdxValidateError):
+        core._parse_json("d", "[" * 100000)
+
+
+def test_load_document_accepts_pathlike(make_model: MakeModel, make_doc: MakeDoc) -> None:  # fmt: skip
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model())
+    assert v.load_document(Path(make_doc(GOOD))).version.pretty == "3.0.1"
+
+
+def test_reload_clears_contexts_cached_during_reload(make_model: MakeModel, make_doc: MakeDoc, monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
+    """A context cached while reload() is still building must not outlive it."""
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model())
+    v.load()
+    gate, entered = threading.Event(), threading.Event()
+    orig = v._load_model
+
+    def slow(version: Any) -> Any:
+        m = orig(version)
+        entered.set()
+        gate.wait(5)
+        return m
+
+    monkeypatch.setattr(v, "_load_model", slow)
+    t = threading.Thread(target=v.reload)
+    t.start()
+    assert entered.wait(5)
+    v.load_document(make_doc(GOOD))  # caches the old context mid-reload
+    gate.set()
+    t.join()
+    assert v._contexts == {}
+
+
+def test_validate_uses_model_snapshot_taken_before_loading_documents(make_model: MakeModel, make_doc: MakeDoc, monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model())
+    old = v.load()
+    orig = core._read_context
+    used: List[Any] = []
+
+    def read_then_reload(loc: str) -> Any:
+        ctx = orig(loc)
+        v.reload()
+        return ctx
+
+    monkeypatch.setattr(core, "_read_context", read_then_reload)
+    real = core.check_graph
+
+    def check_wrap(g: Any, s: Any, *a: Any) -> Any:
+        used.append(s)
+        return real(g, s, *a)
+
+    monkeypatch.setattr(core, "check_graph", check_wrap)  # fmt: skip
+    v.validate(make_doc(GOOD))
+    assert v.load() is not old and used and all(s is old.shacl_graph for s in used)
+
+
+def test_snapshot_of_other_version_is_not_reused(make_model: MakeModel, make_doc: MakeDoc) -> None:  # fmt: skip
+    """A document of another version never meets the bound version's model."""
+    v = spdx3_validate.Validator(model_dir=make_model())
+    v.load("3.0.1")
+    with pytest.raises(spdx3_validate.SpdxValidateError, match="incompatible|Validator is for"):  # fmt: skip
+        v.validate(make_doc(GOOD, version="3.0.0"))
+
+
+@pytest.mark.parametrize("entry", ["load", "reload"])
+def test_warning_handler_may_use_the_validator(entry: str, make_model: MakeModel, make_doc: MakeDoc) -> None:  # fmt: skip
+    """A warning hook that calls back into the validator must not deadlock."""
+    doc = make_doc(GOOD)
+    v = spdx3_validate.Validator("3.0.1", model_dir=make_model(shapes=PRE_SHAPES))
+    if entry == "reload":
+        with pytest.warns(FutureWarning):
+            v.load()
+    done = threading.Event()
+
+    def hook(msg: Any, cat: Any, *a: Any, **k: Any) -> None:
+        if cat is spdx3_validate.PreReleaseWarning:
+            v.load_document(doc)  # cache miss -> needs the lock
+
+    def run() -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.showwarning = hook  # type: ignore[assignment]
+            getattr(v, entry)()
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(10)
+
+
+def test_load_time_warning_handler_cannot_deadlock(tmp_path: Path, make_model: MakeModel) -> None:  # fmt: skip
+    """Empty-schema warnings fire inside the load; re-entering raises, not hangs."""
+    md = make_model()
+    (Path(md) / "v3.0.1" / "spdx-json-schema.json").write_text("{}")
+    v = spdx3_validate.Validator("3.0.1", model_dir=md)
+    seen: List[str] = []
+
+    def hook(msg: Any, *a: Any, **k: Any) -> None:
+        try:
+            v.load()
+        except spdx3_validate.SpdxValidateError as e:
+            seen.append(str(e))
+
+    def run() -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.showwarning = hook  # type: ignore[assignment]
+            v.load()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive() and seen
+
+
+def test_network_reads_have_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "s.json").write_text("{}")
+    seen: List[Any] = []
+
+    def fake(url: str, timeout: Any = None) -> Any:
+        seen.append(timeout)
+        raise OSError("x")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(spdx3_validate.ResourceNotFoundError):
+        core.read_location("http://x/y")
+    with pytest.raises(spdx3_validate.ResourceNotFoundError):
+        core._read_json("http://x/y", "schema")
+    assert len(seen) == 2 and all(seen)
+
+
+def test_truncated_body_is_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import http.client
+
+    def fake(url: str, timeout: Any = None) -> Any:
+        raise http.client.IncompleteRead(b"x")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    with pytest.raises(spdx3_validate.ResourceNotFoundError):
+        core.read_location("http://x/y")
+
+
+def test_read_json_deeply_nested(tmp_path: Path) -> None:
+    p = tmp_path / "deep.json"
+    p.write_text("[" * 100000)
+    with pytest.raises(spdx3_validate.SpdxValidateError):
+        core._read_json(str(p), "schema")
+
+
+@pytest.mark.parametrize("lit,expected", [("FALSE", False), ("0", False), (" false ", False), ("", False), ("no", True)])  # fmt: skip
+def test_is_pre_release_literal_forms(lit: str, expected: bool) -> None:
+    assert core._is_pre_release(_onto(f'{S2C} "{lit}"')) is expected
+
+
+def test_document_load_accepts_pathlike(make_doc: MakeDoc) -> None:
+    assert core.Document.load(Path(make_doc(GOOD))).version.pretty == "3.0.1"
+
+
+@pytest.mark.parametrize("override,shapes,expect_warn", [(False, PRE_SHAPES, False), (True, THING_NAME, True)])  # fmt: skip
+def test_cli_function_passes_pre_release(override: bool, shapes: str, expect_warn: bool, make_model: MakeModel, make_doc: MakeDoc, capsys: pytest.CaptureFixture[str]) -> None:  # fmt: skip
+    rc = spdx3_validate.spdx3validate([make_doc(GOOD)], model_dir=make_model(shapes=shapes), quiet=True, pre_release=override)  # fmt: skip
+    assert rc == 0
+    assert ("pre-release" in capsys.readouterr().err) is expect_warn
+
+
+def test_cli_error_filter_on_pre_release_is_clean(make_model: MakeModel, make_doc: MakeDoc, capsys: pytest.CaptureFixture[str]) -> None:  # fmt: skip
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", spdx3_validate.PreReleaseWarning)
+        rc = spdx3_validate.spdx3validate([make_doc(GOOD)], model_dir=make_model(shapes=PRE_SHAPES), quiet=True)  # fmt: skip
+    assert rc == 1 and "pre-release" in capsys.readouterr().out
+
+
+def test_reload_from_warning_handler_during_load_raises(tmp_path: Path, make_model: MakeModel) -> None:  # fmt: skip
+    md = make_model()
+    (Path(md) / "v3.0.1" / "spdx-json-schema.json").write_text("{}")
+    v = spdx3_validate.Validator("3.0.1", model_dir=md)
+    seen: List[str] = []
+
+    def hook(msg: Any, *a: Any, **k: Any) -> None:
+        try:
+            v.reload()
+        except spdx3_validate.SpdxValidateError as e:
+            seen.append(str(e))
+
+    def run() -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.showwarning = hook  # type: ignore[assignment]
+            v.load()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive() and seen
+
+
+def test_validator_pickle_error_is_clear() -> None:
+    import pickle
+
+    with pytest.raises(TypeError, match="one per process"):
+        pickle.dumps(spdx3_validate.Validator())

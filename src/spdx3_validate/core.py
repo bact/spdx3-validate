@@ -15,6 +15,7 @@ top of these primitives.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -26,7 +27,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type, Union
 
 import jsonschema
 import pyshacl
@@ -39,6 +40,9 @@ from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
 # One location, or a list of them (only the first is used so far).
 _PathLike = Union[str, "os.PathLike[str]"]
 _Locations = Union[_PathLike, Sequence[_PathLike], None]
+
+
+_TIMEOUT = 60  # seconds, for each network read
 
 
 class SpdxValidateError(Exception):
@@ -94,10 +98,10 @@ def read_location(location: str) -> str:
     """Read the contents of a path or an URL."""
     if "://" in location:
         try:
-            with urllib.request.urlopen(location) as f:
+            with urllib.request.urlopen(location, timeout=_TIMEOUT) as f:
                 content: bytes = f.read()
                 return content.decode("utf-8")
-        except (OSError, ValueError) as e:  # ValueError: malformed URL, not UTF-8
+        except (OSError, ValueError, http.client.HTTPException) as e:  # bad URL/body
             raise ResourceNotFoundError(f"Failed to read URL {location}: {e}") from e
     try:
         with Path(location).open("r", encoding="utf-8-sig") as f:
@@ -118,16 +122,16 @@ def _read_json(location: str, kind: str) -> Any:
     """Read JSON from a path or URL; failures raise ResourceNotFoundError."""
     try:
         if "://" in location:
-            with urllib.request.urlopen(location) as f:
+            with urllib.request.urlopen(location, timeout=_TIMEOUT) as f:
                 raw: bytes = f.read()
         else:
             with open(location, "rb") as f:
                 raw = f.read()
-    except (OSError, ValueError) as e:  # ValueError: malformed URL
+    except (OSError, ValueError, http.client.HTTPException) as e:  # bad URL/body
         raise _read_failure(kind, location, e) from e
     try:
         return json.loads(raw)
-    except ValueError as e:  # malformed JSON or not UTF-8
+    except (ValueError, RecursionError) as e:  # malformed JSON or not UTF-8
         raise SpdxValidateError(f"Invalid JSON in {kind} {location}: {e}") from e
 
 
@@ -156,7 +160,11 @@ def _check_context_matches(
         )
 
 
-def _warn_unsupported(message: str) -> None:
+class PreReleaseWarning(FutureWarning):
+    """The SPDX model in use is pre-release and may change."""
+
+
+def _warn_unsupported(message: str, category: Type[Warning] = UserWarning) -> None:
     """Warn, attributed to the first caller outside this package."""
     level = 2
     frame: Optional[FrameType] = sys._getframe(1)
@@ -165,7 +173,7 @@ def _warn_unsupported(message: str) -> None:
         frame is not None and str(frame.f_globals.get("__name__")).split(".")[0] == pkg
     ):
         frame, level = frame.f_back, level + 1
-    warnings.warn(message, UserWarning, stacklevel=level)
+    warnings.warn(message, category, stacklevel=level)
 
 
 def _first_location(urls: _Locations, name: str) -> Optional[List[str]]:
@@ -187,7 +195,7 @@ def _parse_json(source: str, text: str) -> Tuple[Dict[str, Any], SpdxVersion]:
     """Parse document JSON and detect its SPDX version from ``@context``."""
     try:
         data = json.loads(text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         raise SpdxValidateError(f"Invalid JSON in {source}: {e}") from e
     if not isinstance(data, dict):
         raise SpdxValidateError(f"{source} is not a JSON object")
@@ -308,7 +316,7 @@ class Document:
         )
 
     @classmethod
-    def from_text(
+    def from_text(  # keep in step with Validator.load_document
         cls,
         source: str,
         text: str,
@@ -430,8 +438,8 @@ def load_validation_data(
 
     shacl_graph = rdflib.Graph()
     try:
-        shacl_graph.parse(actual_shacl_url)
-    except OSError as e:
+        shacl_graph.parse(actual_shacl_url)  # rdflib fetches URLs; no timeout
+    except (OSError, http.client.HTTPException) as e:
         raise _read_failure("shapes", actual_shacl_url, e) from e
     except Exception as e:  # rdflib raises many parser-specific errors
         raise SpdxValidateError(f"Invalid shapes {actual_shacl_url}: {e}") from e
@@ -490,13 +498,15 @@ def _schema_error(
 
 def derives_from(cls: Node, target: Node, shacl_graph: rdflib.Graph) -> bool:
     """Return True if RDF class *cls* is, or derives from, *target*."""
-    if cls == target:
-        return True
-
-    for subclass in shacl_graph.objects(cls, RDFS.subClassOf):
-        if derives_from(subclass, target, shacl_graph):
+    seen = set()
+    todo = [cls]
+    while todo:
+        c = todo.pop()
+        if c == target:
             return True
-
+        if c not in seen:  # user shapes may contain subclass cycles
+            seen.add(c)
+            todo.extend(shacl_graph.objects(c, RDFS.subClassOf))
     return False
 
 
@@ -676,7 +686,7 @@ def _ontology_is_pre_release(g: rdflib.Graph, onto: Node) -> bool:
     """Apply shacl2code's precedence to one ``owl:Ontology`` node."""
     flag = g.value(onto, _SH2CODE_PRE)
     if flag is not None:
-        return str(flag).strip().lower() in ("true", "1")
+        return str(flag).strip().lower() not in ("false", "0", "")
     adms = [str(o) for o in g.objects(onto, _ADMS_STATUS)]
     semic = [x for x in adms if x.startswith(_SEMIC_NS)]
     if semic:
@@ -696,7 +706,7 @@ def _ontology_is_pre_release(g: rdflib.Graph, onto: Node) -> bool:
         return any(x in ("unstable", "testing") for x in vs)
     return any(
         _SEMVER_PRE.match(v) or _PRE_WORD.search(v) or _MAJOR_ZERO.match(v)
-        for v in (str(o) for o in g.objects(onto, OWL.versionInfo))
+        for v in (str(o).strip() for o in g.objects(onto, OWL.versionInfo))
     )
 
 
@@ -710,16 +720,10 @@ def _is_pre_release(g: rdflib.Graph, override: Optional[bool] = None) -> bool:
 
 
 def _warn_pre_release(version: SpdxVersion) -> None:
-    """Warn, attributed to the first caller outside this module."""
-    level = 2
-    frame: Optional[FrameType] = sys._getframe(1)
-    while frame is not None and frame.f_globals.get("__name__") == __name__:
-        frame, level = frame.f_back, level + 1
-    warnings.warn(
+    _warn_unsupported(
         f"SPDX {version.pretty} model is marked pre-release; it may change. "
         "Call Validator.reload() to pick up changes.",
-        FutureWarning,
-        stacklevel=level,
+        PreReleaseWarning,
     )
 
 
@@ -741,8 +745,8 @@ class Validator:
 
     Options and their precedence match :func:`validate`. The model is read on
     first use (:meth:`load`, :attr:`is_pre_release` or a non-empty
-    :meth:`validate`). With
-    ``version=None`` the validator binds to the first document's version.
+    :meth:`validate`). With ``version=None`` the validator binds to the first
+    document's version.
     Resources are not re-read unless :meth:`reload` is called, which is only
     needed for models published at a moving URL. Safe to share between threads.
 
@@ -776,7 +780,10 @@ class Validator:
         self._model: Optional[_Model] = None
         self._contexts: Dict[str, Dict[str, Any]] = {}
         self._generation = 0  # bumped by reload() to drop in-flight context reads
+        self._reload_seq = 0  # tickets so the latest reload() always wins
+        self._installed_seq = 0
         self._lock = threading.Lock()
+        self._loading = threading.local()
 
     @property
     def version(self) -> Optional[SpdxVersion]:
@@ -785,7 +792,11 @@ class Validator:
 
     @property
     def is_pre_release(self) -> bool:
-        """True if the model is pre-release. Loads the model if needed."""
+        """True if the model is pre-release. Loads the model if needed.
+
+        Raises like :meth:`load`; with no version pinned or detected yet it
+        raises :class:`SpdxValidateError`.
+        """
         return self.load().is_pre_release
 
     def load(self, version: Union[str, SpdxVersion, None] = None) -> _Model:
@@ -796,6 +807,9 @@ class Validator:
                 version this validator is bound to.
             UnknownVersionError: *version* is unknown.
             ResourceNotFoundError: A specified or expected model file is missing.
+
+        A pre-release model issues a :class:`PreReleaseWarning` (after the
+        model is stored, so an error filter leaves the validator loaded).
         """
         requested = _resolve_version(version)
         model = self._model
@@ -805,35 +819,70 @@ class Validator:
             raise SpdxValidateError(
                 f"Validator is for SPDX {self._version.pretty}, not {requested.pretty}"
             )
+        if getattr(self._loading, "on", False):
+            raise SpdxValidateError(
+                "Validator used from a warning handler while loading"
+            )
+        loaded: Optional[_Model] = None
         with self._lock:  # version re-checked below: another thread may have bound one
             if self._model is None:
                 wanted = requested or self._version
                 if wanted is None:
                     raise SpdxValidateError("Unable to determine SPDX version")
-                self._model = self._load_model(wanted)
+                self._loading.on = True  # a handler re-entering would deadlock
+                try:
+                    loaded = self._load_model(wanted)
+                finally:
+                    self._loading.on = False
                 self._version = wanted
+                self._model = loaded
             elif requested is not None and requested != self._model.version:
                 raise SpdxValidateError(
                     f"Validator is for SPDX {self._model.version.pretty}, "
                     f"not {requested.pretty}"
                 )
-            return self._model
+            model = self._model
+        if loaded is not None and loaded.is_pre_release:
+            _warn_pre_release(loaded.version)  # outside the lock: handlers may re-enter
+        return model
+
+    def __reduce__(self) -> Any:
+        raise TypeError("Validator cannot be pickled; create one per process")
 
     def reload(self) -> None:
-        """Drop the in-memory contexts and re-read the model if it is loaded."""
-        with self._lock:
-            self._generation += 1
-            self._contexts = {}
-            if self._model is not None:
-                self._model = self._load_model(self._model.version)
+        """Re-read the model (if loaded) and drop the in-memory contexts.
 
-    def load_document(self, source: str, text: Optional[str] = None) -> Document:
+        A validation running meanwhile keeps the model it started with; documents
+        it parses after the swap may use the new contexts.
+        """
+        if getattr(self._loading, "on", False):
+            raise SpdxValidateError(
+                "Validator used from a warning handler while loading"
+            )
+        with self._lock:
+            self._reload_seq += 1
+            ticket = self._reload_seq
+            current = self._model
+        new = self._load_model(current.version) if current else None  # slow
+        with self._lock:
+            if ticket < self._installed_seq:  # a later reload() already finished
+                return
+            self._installed_seq = ticket
+            if new is not None:
+                self._model = new
+            self._contexts = {}  # swapped with the model, never before
+            self._generation += 1
+        if new is not None and new.is_pre_release:
+            _warn_pre_release(new.version)
+
+    def load_document(self, source: _PathLike, text: Optional[str] = None) -> Document:
         """Load a document like :meth:`Document.load`, reusing the in-memory context.
 
         Args:
             source: Path or URL, or a label if *text* is given.
             text: The document content; read from *source* when omitted.
         """
+        source = os.fspath(source)
         if text is None:
             text = read_location(source)
         data, version = _parse_json(source, text)
@@ -843,9 +892,10 @@ class Validator:
         if ctx_obj is None:
             generation = self._generation
             ctx_obj = _read_context(location)
-            with self._lock:
-                if generation == self._generation:  # not invalidated by reload()
-                    self._contexts[location] = ctx_obj
+            if not getattr(self._loading, "on", False):  # lock may be held by us
+                with self._lock:
+                    if generation == self._generation:  # not invalidated by reload()
+                        self._contexts[location] = ctx_obj
         graph = _parse_graph(source, data, text, version, ctx_obj, override)
         return Document(source, data, graph, version)
 
@@ -864,6 +914,7 @@ class Validator:
             sources = [sources]
 
         resolved = self._version
+        model = self._model  # pairs documents' contexts with this model
         documents: List[Document] = []
         for source in sources:
             doc = self.load_document(os.fspath(source))
@@ -879,7 +930,8 @@ class Validator:
         if not documents:
             return ValidationResult()
 
-        model = self.load(resolved)
+        if model is None or model.version != resolved:
+            model = self.load(resolved)  # raises if bound to another version
 
         errors: List[ValidationError] = []
         for doc in documents:
@@ -929,8 +981,6 @@ class Validator:
         for triple in _PYSHACL_SYSTEM_TRIPLES:
             shacl_graph.add(triple)
         pre_release = _is_pre_release(shacl_graph, self._pre_release)
-        if pre_release:
-            _warn_pre_release(version)
         return _Model(version, validator, shacl_graph, pre_release)
 
 
@@ -943,6 +993,7 @@ def validate(
     shacl_urls: _Locations = None,
     context_urls: _Locations = None,
     model_dir: Optional[str] = None,
+    pre_release: Optional[bool] = None,
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
@@ -968,6 +1019,8 @@ def validate(
             @context. Takes precedence over `model_dir`.
         model_dir: Optional directory containing versioned models (v[VERSION]/).
             Used for any resources not explicitly overridden above.
+        pre_release: Overrides the pre-release status read from the model;
+            a pre-release model issues a :class:`PreReleaseWarning`.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -986,4 +1039,5 @@ def validate(
         shacl_urls=shacl_urls,
         context_urls=context_urls,
         model_dir=model_dir,
+        pre_release=pre_release,
     ).validate(sources, check_merged=check_merged)

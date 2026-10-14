@@ -23,9 +23,17 @@ from .core import (
     SpdxValidateError,
     _Locations,
     UnknownVersionError,
+    PreReleaseWarning,
     Validator,
     _resolve_version,
 )
+
+
+def _read_stdin() -> str:
+    try:
+        return sys.stdin.read()
+    except UnicodeDecodeError as e:
+        raise SpdxValidateError(f"Cannot decode -: {e}") from e
 
 
 def iter_validation_errors(
@@ -130,6 +138,18 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--pre-release",
+        action="store_true",
+        default=None,
+        help="Treat the model as pre-release, overriding detection",
+    )
+    parser.add_argument(
+        "--no-pre-release",
+        action="store_false",
+        dest="pre_release",
+        help="Treat the model as stable, overriding detection",
+    )
+    parser.add_argument(
         "--schema",
         action="append",
         help=(
@@ -182,6 +202,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         shacl_urls=args.shapes[:1] if args.shapes else None,
         context_urls=args.context[:1] if args.context else None,
         model_dir=model_dir,
+        pre_release=args.pre_release,
     )
 
 
@@ -194,6 +215,7 @@ def spdx3validate(
     shacl_urls: _Locations = None,
     context_urls: _Locations = None,
     model_dir: Optional[str] = None,
+    pre_release: Optional[bool] = None,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
@@ -206,13 +228,14 @@ def spdx3validate(
         shacl_urls=shacl_urls,
         context_urls=context_urls,
         model_dir=model_dir,
+        pre_release=pre_release,
     )
 
     documents: List[Document] = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
-                doc = validator.load_document(j, sys.stdin.read() if j == "-" else None)
+                doc = validator.load_document(j, _read_stdin() if j == "-" else None)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -246,13 +269,13 @@ def spdx3validate(
             with warnings.catch_warnings(record=True) as caught:
                 validator.load(resolved_version)  # user warning filters apply
             spinner.succeed()
-        except SpdxValidateError as e:
+        except (SpdxValidateError, Warning) as e:  # Warning: -W error filters
             spinner.fail()
             print(str(e))
             return 1
 
     for w in caught:
-        if issubclass(w.category, FutureWarning):
+        if issubclass(w.category, PreReleaseWarning):
             print(
                 f"WARNING: SPDX {resolved_version.pretty} model is marked "
                 "pre-release; it may change between runs",
