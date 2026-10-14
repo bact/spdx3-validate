@@ -79,10 +79,11 @@ spdx3-validate --json document.json \
   --context /path/to/spdx-context.jsonld
 ```
 
-### Environment variable (`SPDX3VALIDATE_MODEL_DIR`)
+### Model directory (`--model-dir` or `SPDX3VALIDATE_MODEL_DIR`)
 
-Alternatively, you can set the `SPDX3VALIDATE_MODEL_DIR` environment variable
-pointing to a directory structured by SPDX model version:
+Alternatively, pass `--model-dir`, or set the `SPDX3VALIDATE_MODEL_DIR`
+environment variable (the flag takes precedence), pointing to a directory
+structured by SPDX model version:
 
 ```text
 <SPDX3VALIDATE_MODEL_DIR>/
@@ -97,11 +98,16 @@ For example:
 ```shell
 export SPDX3VALIDATE_MODEL_DIR=/path/to/spdx_models
 spdx3-validate -j document.json
+
+# or
+spdx3-validate -j document.json --model-dir /path/to/spdx_models
 ```
 
 ### Offline library validation
 
-For offline library validation, pass `model_dir` or explicit resource lists
+The library does not read `SPDX3VALIDATE_MODEL_DIR`; that variable and
+`--model-dir` are command-line only. For offline library validation, pass
+`model_dir` or explicit resource lists
 (`schema_urls`, `shacl_urls`, `context_urls`):
 
 ```python
@@ -120,7 +126,16 @@ result = spdx3_validate.validate(
 )
 ```
 
-Missing local model files raise `spdx3_validate.ResourceNotFoundError`.
+Missing local model files, and schema, shapes, or context locations that cannot
+be read, raise `spdx3_validate.ResourceNotFoundError`. Malformed JSON, an invalid shapes file,
+and a context that does not match the document's SPDX version raise
+`spdx3_validate.SpdxValidateError`. On the command line they are reported as
+an error message.
+
+Each resource can be a single string or a list. Lists accept more than one entry
+for future use, but only the
+first entry is used today; passing more issues a `UserWarning` (the command
+line prints a warning and uses the first).
 
 ### Order of precedence
 
@@ -132,7 +147,7 @@ For each validation resource (JSON schema, SHACL shapes, JSON-LD context),
    `--schema`, `--shapes`, `--context`):
    Used exclusively if provided.
    Raises `ResourceNotFoundError` if the specified local file does not exist.
-2. **Model directory (`model_dir` / `SPDX3VALIDATE_MODEL_DIR`)**:
+2. **Model directory (`model_dir` / `--model-dir` / `SPDX3VALIDATE_MODEL_DIR`)**:
    Evaluated if explicit parameters or CLI flags are omitted.
    Looks for `<model_dir>/v[VERSION]/[file]`.
    Raises `ResourceNotFoundError` if the expected model file is missing.
