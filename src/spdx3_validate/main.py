@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import warnings
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import halo
@@ -22,39 +23,9 @@ from .core import (
     SpdxValidateError,
     _Locations,
     UnknownVersionError,
-    _first_location,
-    _schema_location,
-    check_graph,
-    load_validation_data,
-    schema_errors,
-    schema_validator,
+    Validator,
     _resolve_version,
 )
-
-
-def load_cli_document(
-    source: str,
-    *,
-    context_urls: _Locations = None,
-    model_dir: Optional[str] = None,
-) -> Document:
-    """Load a document from a path, URL, or ``"-"`` for standard input.
-
-    Unlike :meth:`Document.load`, this also accepts ``"-"``, which is a
-    command-line convention (not a library one) for reading from stdin.
-    """
-    if source == "-":
-        return Document.from_text(
-            source,
-            sys.stdin.read(),
-            context_urls=context_urls,
-            model_dir=model_dir,
-        )
-    return Document.load(
-        source,
-        context_urls=context_urls,
-        model_dir=model_dir,
-    )
 
 
 def iter_validation_errors(
@@ -229,19 +200,19 @@ def spdx3validate(
     except UnknownVersionError as e:
         print(str(e))
         return 1
-    schema_urls = _first_location(schema_urls, "schema")
-    shacl_urls = _first_location(shacl_urls, "shapes")
-    context_urls = _first_location(context_urls, "context")
+    validator = Validator(
+        resolved_version,
+        schema_urls=schema_urls,
+        shacl_urls=shacl_urls,
+        context_urls=context_urls,
+        model_dir=model_dir,
+    )
 
     documents: List[Document] = []
     for j in json_files:
         with halo.Halo(f"Loading {j}", enabled=not quiet) as spinner:
             try:
-                doc = load_cli_document(
-                    j,
-                    context_urls=context_urls,
-                    model_dir=model_dir,
-                )
+                doc = validator.load_document(j, sys.stdin.read() if j == "-" else None)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -272,17 +243,23 @@ def spdx3validate(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
         try:
-            schema, shacl_graph = load_validation_data(
-                resolved_version,
-                schema_urls=schema_urls,
-                shacl_urls=shacl_urls,
-                model_dir=model_dir,
-            )
+            with warnings.catch_warnings(record=True) as caught:
+                validator.load(resolved_version)  # user warning filters apply
             spinner.succeed()
         except SpdxValidateError as e:
             spinner.fail()
             print(str(e))
             return 1
+
+    for w in caught:
+        if issubclass(w.category, FutureWarning):
+            print(
+                f"WARNING: SPDX {resolved_version.pretty} model is marked "
+                "pre-release; it may change between runs",
+                file=sys.stderr,
+            )
+        else:
+            warnings.showwarning(w.message, w.category, w.filename, w.lineno)
 
     errors = 0
 
@@ -291,15 +268,7 @@ def spdx3validate(
             f"Validating schema for {doc.source}", enabled=not quiet
         ) as spinner:
             try:
-                validator = schema_validator(schema)
-            except jsonschema.exceptions.SchemaError as e:
-                spinner.fail()
-                location = _schema_location(resolved_version, schema_urls, model_dir)
-                print(f"Invalid schema {location}: {e}")
-                return 1
-
-            try:
-                json_errors = schema_errors(validator, doc.data)
+                json_errors = validator._schema_errors(doc)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -319,9 +288,7 @@ def spdx3validate(
             f"Checking SHACL for {doc.source}", enabled=not quiet
         ) as spinner:
             try:
-                graph_errors = check_graph(
-                    doc.graph, shacl_graph, resolved_version, True
-                )
+                graph_errors = validator._shacl_errors(doc.graph, True)
             except SpdxValidateError as e:
                 spinner.fail()
                 print(str(e))
@@ -344,9 +311,7 @@ def spdx3validate(
                     merged_g += doc.graph
 
                 try:
-                    graph_errors = check_graph(
-                        merged_g, shacl_graph, resolved_version, False
-                    )
+                    graph_errors = validator._shacl_errors(merged_g, False)
                 except SpdxValidateError as e:
                     spinner.fail()
                     print(str(e))

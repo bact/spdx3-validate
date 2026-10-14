@@ -11,6 +11,7 @@ from .core import (
     UnknownVersionError,
     ValidationError,
     ValidationResult,
+    Validator,
     validate,
 )
 from .main import spdx3validate
@@ -23,6 +24,7 @@ __all__ = [
     "UnknownVersionError",
     "ValidationError",
     "ValidationResult",
+    "Validator",
     "__version__",
     "spdx3validate",
     "validate",

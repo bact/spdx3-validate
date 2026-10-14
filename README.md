@@ -62,6 +62,28 @@ for error in result.errors:
 - A document that cannot be loaded (missing `@context`, unknown version,
   incompatible versions) raises `spdx3_validate.SpdxValidateError`.
 
+### Validating many documents
+
+`validate()` loads the schema and SHACL model on every call. To validate
+repeatedly with the same model, create a `Validator`, which loads them once
+(on first use) and keeps them in memory. Nothing is written to disk, and a new
+process loads everything again. It takes the same resource options as `validate()`; pass
+`check_merged` to its `validate()` method:
+
+```python
+v = spdx3_validate.Validator(model_dir="/path/to/spdx_models")
+for path in paths:
+    print(v.validate(path))
+```
+
+A `Validator` binds to one SPDX version (detected from the first document, or
+given as `version=`) and can be shared between threads; validations running
+during a `reload()` finish on the previous model. It does not re-read its
+resources by itself; call `v.reload()` if the model is served from a moving URL
+(for example a `-dev` build). If the model is marked pre-release, loading
+issues a `FutureWarning`; `v.is_pre_release` reports it and `pre_release=True`
+or `False` overrides it.
+
 ## Offline validation
 
 `spdx3-validate` can perform offline validation without fetching schemas or
