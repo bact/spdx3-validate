@@ -42,10 +42,16 @@ INVALID_EXT_DOC = EXT_DIR / "valid-ext-invalid.spdx3.json"
 
 
 def _validate(
-    doc: Path, extra_shacl: List[Union[str, Path]]
+    doc: Path,
+    extra_shacl: List[Union[str, Path]],
+    require_known_extensions: bool = False,
 ) -> spdx3_validate.ValidationResult:
     try:
-        return spdx3_validate.validate(str(doc), extra_shacl=extra_shacl)
+        return spdx3_validate.validate(
+            str(doc),
+            extra_shacl=extra_shacl,
+            require_known_extensions=require_known_extensions,
+        )
     except OSError as e:
         pytest.skip(f"network unavailable: {e}")
 
@@ -360,9 +366,10 @@ def test_shape_load_errors_reported(
 TYPO_EXT_DOC = EXT_DIR / "typo-extension-type.spdx3.json"
 
 
-def test_extension_type_typo_reported_with_shacl() -> None:
-    """An extension whose type IRI has a typo is reported with the SHACL."""
-    result = _validate(TYPO_EXT_DOC, [str(EXT_SHACL)])
+def test_extension_type_typo_reported_when_required() -> None:
+    """With require_known_extensions, an extension whose type IRI has a typo
+    is reported."""
+    result = _validate(TYPO_EXT_DOC, [str(EXT_SHACL)], True)
     assert not result.valid
     assert len(result.errors) == 1
     message = result.errors[0].message
@@ -371,10 +378,59 @@ def test_extension_type_typo_reported_with_shacl() -> None:
     assert EXTENSION_CLASS_MESSAGE in message
 
 
-def test_extension_type_typo_not_reported_without_shacl() -> None:
-    """Without extension definitions extension types stay open-world."""
-    result = _validate(TYPO_EXT_DOC, [])
+@pytest.mark.parametrize("extra_shacl", [[], [EXT_SHACL]], ids=["none", "shacl"])
+def test_extension_type_typo_not_reported_by_default(
+    extra_shacl: List[Union[str, Path]],
+) -> None:
+    """Without require_known_extensions extension types stay open-world,
+    with or without extra SHACL."""
+    result = _validate(TYPO_EXT_DOC, extra_shacl)
     assert result.valid, str(result)
+
+
+POLICY_TTL = """\
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix core: <https://spdx.org/rdf/3.0.1/terms/Core/> .
+<urn:policy:NameShape> a sh:NodeShape ; sh:targetClass core:SpdxDocument ;
+    sh:property [ sh:path core:name ; sh:minCount 1 ] .
+"""
+
+
+@pytest.mark.parametrize("doc", VALID_EXT_DOCS, ids=lambda p: p.name)
+def test_policy_only_shacl_does_not_require_known_extensions(
+    tmp_path: Path, doc: Path
+) -> None:
+    """A policy-only shapes file does not make extension types fail."""
+    policy = tmp_path / "policy.ttl"
+    policy.write_text(POLICY_TTL, encoding="utf-8")
+    result = _validate(doc, [policy])
+    assert result.valid, str(result)
+
+
+def test_cli_require_known_extensions(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--require-known-extensions`` turns on the check on the command line."""
+    from spdx3_validate.main import main
+
+    args = ["-q", "--shacl", str(EXT_SHACL), "-j", str(TYPO_EXT_DOC)]
+    try:
+        assert main(args) == 0
+        assert main(args + ["--require-known-extensions"]) == 1
+    except OSError as e:
+        pytest.skip(f"network unavailable: {e}")
+    assert EXTENSION_CLASS_MESSAGE in capsys.readouterr().out
+
+
+def test_spdx3validate_require_known_extensions() -> None:
+    """``spdx3validate()`` takes ``require_known_extensions`` too."""
+    try:
+        rc = spdx3_validate.spdx3validate(
+            [str(TYPO_EXT_DOC)],
+            extra_shacl=[str(EXT_SHACL)],
+            require_known_extensions=True,
+        )
+    except OSError as e:
+        pytest.skip(f"network unavailable: {e}")
+    assert rc == 1
 
 
 def _shape_classes(shape: rdflib.Graph) -> List[Tuple[Node, Node]]:
@@ -437,7 +493,7 @@ def test_extension_own_extension_shape_keeps_check(tmp_path: Path) -> None:
         "ex:Foo a owl:Class, sh:NodeShape ; rdfs:subClassOf spdx-ext:Extension ;\n"
         "    sh:property [ sh:path core:extension ; sh:class spdx-ext:Extension ] .\n",
     )
-    result = _validate(TYPO_EXT_DOC, [ttl, EXT_SHACL])
+    result = _validate(TYPO_EXT_DOC, [ttl, EXT_SHACL], True)
     assert len(result.errors) == 1
     assert EXTENSION_CLASS_MESSAGE in result.errors[0].message
 
@@ -449,7 +505,7 @@ def test_deny_listed_extension_type_reported_once() -> None:
     """A value already rejected by the model's deny-list (here a Person) is
     not reported again by the positive check."""
     without = _validate(DENY_LISTED_EXT_DOC, [])
-    with_shacl = _validate(DENY_LISTED_EXT_DOC, [EXT_SHACL])
+    with_shacl = _validate(DENY_LISTED_EXT_DOC, [EXT_SHACL], True)
     assert len(with_shacl.errors) == len(without.errors)
     messages = "\n".join(e.message for e in with_shacl.errors)
     assert "NotConstraintComponent" in messages
@@ -459,23 +515,28 @@ def test_deny_listed_extension_type_reported_once() -> None:
 IMPORTED_EXT_DOC = EXT_DIR / "imported-iri-extension.spdx3.json"
 
 
-def test_imported_iri_extension_not_reported() -> None:
-    """An IRI extension value listed in an ExternalMap, so defined in another
-    document, is not reported when validating the document on its own."""
-    result = _validate(IMPORTED_EXT_DOC, [EXT_SHACL])
-    assert result.valid, str(result)
-
-
-def test_unimported_iri_extension_reported(tmp_path: Path) -> None:
-    """An IRI extension value that is not imported is still reported."""
-    data = json.loads(IMPORTED_EXT_DOC.read_text(encoding="utf-8"))
-    for obj in data["@graph"]:
-        obj.pop("import", None)
-    doc = tmp_path / "unimported-iri-extension.spdx3.json"
-    doc.write_text(json.dumps(data), encoding="utf-8")
-    result = _validate(doc, [EXT_SHACL])
+def test_imported_iri_extension_reported() -> None:
+    """An ExternalMap maps Elements, and an Extension is not an Element, so an
+    IRI extension value listed in an ExternalMap is still reported."""
+    result = _validate(IMPORTED_EXT_DOC, [EXT_SHACL], True)
     assert len(result.errors) == 1
     assert EXTENSION_CLASS_MESSAGE in result.errors[0].message
+
+
+def test_imported_iri_extension_reported_by_3_0_0_model(tmp_path: Path) -> None:
+    """The SPDX 3.0.0 model's own sh:class Extension check still reports an
+    imported IRI extension value, without extra SHACL."""
+    text = IMPORTED_EXT_DOC.read_text(encoding="utf-8").replace("3.0.1", "3.0.0")
+    data = json.loads(text)
+    for obj in data["@graph"]:
+        if "import" in obj:
+            obj["imports"] = obj.pop("import")
+    doc = tmp_path / "imported-iri-extension-3.0.0.spdx3.json"
+    doc.write_text(json.dumps(data), encoding="utf-8")
+    result = _validate(doc, [])
+    messages = "\n".join(e.message for e in result.errors)
+    assert "ClassConstraintComponent" in messages
+    assert "https://example.org/other/ext1" in messages
 
 
 def test_extension_class_message_is_not_cli_specific() -> None:

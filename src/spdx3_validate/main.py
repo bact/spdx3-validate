@@ -143,9 +143,14 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         help="Additional SHACL shapes / OWL ontology (e.g. the definition of an "
         "SPDX 3 extension) to validate against, merged with the SPDX model. "
         "The file is trusted: it can change how SPDX itself is validated. "
-        "When given, every extension value must also be of a class derived "
-        "from Extension in the SPDX model or these files. "
         "May be given more than once",
+    )
+    parser.add_argument(
+        "--require-known-extensions",
+        action="store_true",
+        help="Require every extension value to be of a class derived from "
+        "Extension in the SPDX model or the --shacl files, so that an "
+        "extension of an unknown type (e.g. a typo) is reported",
     )
     parser.add_argument(
         "--quiet",
@@ -163,6 +168,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         args.check_merged,
         args.quiet,
         extra_shacl=args.extra_shacl,
+        require_known_extensions=args.require_known_extensions,
     )
 
 
@@ -172,6 +178,7 @@ def spdx3validate(
     check_merged: bool = False,
     quiet: bool = True,
     extra_shacl: Union[ShaclLocation, Sequence[ShaclLocation], None] = None,
+    require_known_extensions: bool = False,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
@@ -240,9 +247,10 @@ def spdx3validate(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
         schema, shacl_graph = load_validation_data(resolved_version)
+        if require_known_extensions:
+            extra_graphs.append(extension_class_shape(resolved_version, shacl_graph))
         if extra_graphs:
-            extension_shape = extension_class_shape(resolved_version, shacl_graph)
-            shacl_graph = merge_shacl(shacl_graph, extra_graphs + [extension_shape])
+            shacl_graph = merge_shacl(shacl_graph, extra_graphs)
         spinner.succeed()
 
     errors = 0

@@ -72,23 +72,32 @@ SPDX classes, or `sh:deactivated true`. Validation still runs with the file.
 A file whose shapes are malformed (e.g. two `sh:maxCount` on one property) is
 reported as an error.
 
-When `--shacl` is given, every `extension` value must also have a type that is
-`Extension/Extension` or derives from it in the SPDX model or the supplied
-files. In other words, every extension type used in the document must then be
-defined in a file passed with `--shacl` (or be an extension class of the SPDX
-model itself, such as `CdxPropertiesExtension`); give one `--shacl` per
-extension used. An extension whose type is unknown, for example because of a
-typo in its type IRI, or is not an `Extension`, is then reported. A value that
-the SPDX model already rejects as a class known not to be an `Extension` (e.g.
-a `Person`) is reported once, by the model's own check. An extension value
-given only as an IRI that is listed in an `ExternalMap` import is, like other
-external references, not reported when its document is validated on its own.
+### Requiring known extension types
 
-Without `--shacl`, as in the SPDX 3.0.1 model itself, extension types are not
-checked this way, since custom extension classes cannot be known in advance.
-The SPDX 3.0.0 model already requires every `extension` value to be an
-`Extension`, with or without `--shacl`, so for 3.0.0 documents this check is
-not added again.
+By default extension types are open-world, as in the SPDX 3.0.1 model itself:
+the model only rejects `extension` values of classes known not to be an
+`Extension` (e.g. a `Person`), since custom extension classes cannot be known
+in advance. Pass `--require-known-extensions` to also require every
+`extension` value to have a type that is `Extension/Extension` or derives from
+it in the SPDX model or the `--shacl` files:
+
+```shell
+spdx3-validate --require-known-extensions --shacl my-extension.ttl --json doc.spdx3.json
+```
+
+Every extension type used in the document must then be defined in a file
+passed with `--shacl` (or be an extension class of the SPDX model itself, such
+as `CdxPropertiesExtension`), so give one `--shacl` per extension used. An
+extension whose type is unknown, for example because of a typo in its type
+IRI, or is not an `Extension`, is reported. A value that the model already
+rejects as a class known not to be an `Extension` is reported once, by the
+model's own check. An extension value given only as an IRI is reported even if
+it is listed in an `ExternalMap`, since an `ExternalMap` maps Elements and an
+Extension is not an Element.
+
+The SPDX 3.0.0 model itself already requires every `extension` value to be an
+`Extension`, so 3.0.0 documents get this check with or without
+`--require-known-extensions`, and it is not added twice.
 
 ## Using as a library
 
@@ -112,6 +121,8 @@ for error in result.errors:
   pass `version="X.Y"` to force one.
 - Set `check_merged=True` to also validate the merged graph of several
   documents together.
+- Pass `require_known_extensions=True` to require known extension types
+  (the library equivalent of `--require-known-extensions`).
 - Pass `extra_shacl=["my-extension.ttl"]` to also validate against
   additional SHACL shapes / OWL ontologies, such as the definition of an
   extension (the library equivalent of `--shacl`).

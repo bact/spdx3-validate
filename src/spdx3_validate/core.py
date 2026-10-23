@@ -341,9 +341,9 @@ def extension_class_shape(
 
     SPDX 3.0.1 only checks ``Core/extension`` values against a deny-list of
     classes known not to derive from ``Extension``, because subclasses defined
-    by custom extensions cannot be known in advance. Once extension
-    definitions are supplied (see :func:`load_shacl`), this shape adds the
-    positive check: each value must have an ``rdf:type`` that is, via
+    by custom extensions cannot be known in advance. When the caller asks to
+    require known extensions (``require_known_extensions`` of
+    :func:`validate`), this shape adds the positive check: each value must have an ``rdf:type`` that is, via
     ``rdfs:subClassOf`` in the merged ontology, a subclass of
     ``Extension/Extension``. A value whose type is unknown (e.g. a typo in the
     type IRI) or not an Extension is reported.
@@ -497,15 +497,13 @@ def check_graph(
             ) not in results:
                 return False
 
-            # A reference to an Element, or an extension value given as an IRI
-            # (whose class is checked by extension_class_shape() or the model)
             is_element = False
             for ss in results.objects(r, SH.sourceShape):
                 if is_element:
                     break
 
                 for cls in results.objects(ss, SH["class"]):
-                    is_element = cls == extension_cls or derives_from(
+                    is_element = derives_from(
                         cls,
                         URIRef(current_version.rdf_base + "Core/Element"),
                         shacl_graph,
@@ -613,6 +611,7 @@ def validate(
     version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
     extra_shacl: Union[ShaclLocation, Iterable[ShaclLocation]] = (),
+    require_known_extensions: bool = False,
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
@@ -632,9 +631,10 @@ def validate(
             they can weaken SPDX validation, which emits an
             :class:`ExtraShaclWarning`. They are loaded even if *sources* is
             empty.
-            When any is given, every ``Core/extension`` value must also be of
-            a class derived from ``Extension/Extension`` in the SPDX model or
-            in these files (see :func:`extension_class_shape`).
+        require_known_extensions: Also require every ``Core/extension``
+            value to be of a class derived from ``Extension/Extension`` in the
+            SPDX model or in *extra_shacl* (see :func:`extension_class_shape`),
+            so an extension of an unknown type, e.g. a typo, is reported.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -678,9 +678,10 @@ def validate(
     assert resolved_version is not None
 
     schema, shacl_graph = load_validation_data(resolved_version)
+    if require_known_extensions:
+        extra_graphs.append(extension_class_shape(resolved_version, shacl_graph))
     if extra_graphs:
-        extension_shape = extension_class_shape(resolved_version, shacl_graph)
-        shacl_graph = merge_shacl(shacl_graph, extra_graphs + [extension_shape])
+        shacl_graph = merge_shacl(shacl_graph, extra_graphs)
 
     try:
         validator = schema_validator(schema)
