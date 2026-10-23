@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import json
 import textwrap
+import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import jsonschema
 import pyshacl
+import pyshacl.errors
 import rdflib
-from rdflib import RDF, RDFS, SH, URIRef
+from rdflib import OWL, RDF, RDFS, SH, Literal, URIRef
 from rdflib.term import Node
 
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
@@ -37,6 +40,23 @@ class SpdxValidateError(Exception):
 
 class UnknownVersionError(SpdxValidateError):
     """The requested SPDX version, or a document's ``@context``, is unknown."""
+
+
+class ShaclShapesError(SpdxValidateError):
+    """The SHACL shapes (e.g. from an extra SHACL file) are malformed."""
+
+
+class ExtraShaclWarning(UserWarning):
+    """An extra SHACL file contains content that can change SPDX validation.
+
+    Extra SHACL files are trusted input: they are merged with the SPDX model,
+    so they can deactivate or redefine its shapes, and individuals they
+    declare are copied into the data graph before validation.
+    """
+
+
+#: A path or URL of an extra SHACL shapes / OWL ontology file.
+ShaclLocation = Union[str, Path]
 
 
 @dataclass
@@ -158,24 +178,129 @@ def load_validation_data(version: SpdxVersion) -> Tuple[Dict[str, Any], rdflib.G
     return schema, shacl_graph
 
 
-def load_shacl(location: str) -> rdflib.Graph:
+def shacl_format(location: ShaclLocation) -> Optional[str]:
+    """Guess the RDF format of an extra SHACL file from its *location*.
+
+    The query and fragment of an URL are ignored. An URL whose format cannot
+    be guessed gives ``None``, so rdflib uses the HTTP ``Content-Type``; a
+    local file falls back to Turtle.
+    """
+    location = str(location)
+    if "://" in location:
+        path = urllib.parse.urlsplit(location).path
+        return rdflib.util.guess_format(path)
+    return rdflib.util.guess_format(location) or "turtle"
+
+
+def _shacl_key(location: ShaclLocation) -> str:
+    """Return a key identifying *location*, to load each file only once."""
+    location = str(location)
+    if "://" in location:
+        return location
+    return str(Path(location).resolve())
+
+
+def unique_shacl_locations(locations: Iterable[ShaclLocation]) -> List[str]:
+    """Return *locations* as strings, without repeats of the same file.
+
+    Local paths are compared after resolving them, URLs as given. Loading a
+    file twice would duplicate its blank-node shapes, and so its findings.
+    """
+    seen: Dict[str, str] = {}
+    for location in locations:
+        seen.setdefault(_shacl_key(location), str(location))
+    return list(seen.values())
+
+
+def _iri_examples(nodes: Iterable[Node], limit: int = 3) -> str:
+    items = sorted({n.n3() for n in nodes})
+    more = f" and {len(items) - limit} more" if len(items) > limit else ""
+    return ", ".join(items[:limit]) + more
+
+
+def extra_shacl_warnings(graph: rdflib.Graph, location: str) -> List[str]:
+    """Return warnings about content of an extra SHACL *graph* that can weaken
+    or change validation against the SPDX model itself.
+
+    Reported are triples whose subject is in an SPDX namespace (they redefine
+    SPDX classes, properties, or shapes), ``owl:NamedIndividual`` instances of
+    SPDX classes (pyshacl copies them into the data graph, so they can satisfy
+    SPDX constraints, e.g. a dangling reference), and ``sh:deactivated true``
+    (which silences the shape).
+    """
+    bases = tuple(sorted({v.rdf_base for v in SPDX_VERSIONS}))
+
+    def in_spdx(n: Node) -> bool:
+        return isinstance(n, URIRef) and str(n).startswith(bases)
+
+    messages: List[str] = []
+
+    spdx_subjects = [s for s in set(graph.subjects()) if in_spdx(s)]
+    if spdx_subjects:
+        messages.append(
+            f"{location} has statements about terms in the SPDX namespace, "
+            f"which change the SPDX model used for validation: "
+            f"{_iri_examples(spdx_subjects)}"
+        )
+
+    individuals = [
+        s
+        for s in graph.subjects(RDF.type, OWL.NamedIndividual)
+        if any(in_spdx(t) for t in graph.objects(s, RDF.type))
+    ]
+    if individuals:
+        messages.append(
+            f"{location} declares owl:NamedIndividual instances of SPDX "
+            f"classes, which are copied into every validated document: "
+            f"{_iri_examples(individuals)}"
+        )
+
+    deactivated = [
+        s
+        for s, o in graph.subject_objects(SH.deactivated)
+        if isinstance(o, Literal) and o.toPython() is True
+    ]
+    if deactivated:
+        messages.append(
+            f"{location} deactivates shapes with sh:deactivated true: "
+            f"{_iri_examples(deactivated)}"
+        )
+
+    return messages
+
+
+def load_shacl(location: ShaclLocation) -> rdflib.Graph:
     """Load an additional SHACL shapes / OWL ontology file from a path or URL.
 
     This is how the definitions of an SPDX 3 extension (its classes, their
     ``rdfs:subClassOf`` links to ``Extension/Extension``, and its SHACL
-    shapes) are supplied. The RDF format is guessed from the file extension,
-    falling back to Turtle.
+    shapes) are supplied. The RDF format is guessed with :func:`shacl_format`.
+
+    The file is trusted input: it is merged with the SPDX model, so it can
+    weaken SPDX validation. An :class:`ExtraShaclWarning` is emitted for each
+    finding of :func:`extra_shacl_warnings`.
 
     Raises:
         SpdxValidateError: The file cannot be read or parsed.
     """
-    fmt = rdflib.util.guess_format(location) or "turtle"
+    location = str(location)
     graph = rdflib.Graph()
     try:
-        graph.parse(location, format=fmt)
+        graph.parse(location, format=shacl_format(location))
     except Exception as e:
         raise SpdxValidateError(f"Unable to load SHACL from {location}: {e}") from e
+
+    for message in extra_shacl_warnings(graph, location):
+        warnings.warn(message, ExtraShaclWarning, stacklevel=2)
     return graph
+
+
+def shacl_shapes_error(e: ShaclShapesError, extra_shacl: Iterable[str]) -> str:
+    """Describe a malformed-shapes error, naming the extra SHACL files."""
+    extra = list(extra_shacl)
+    if extra:
+        return f"Invalid SHACL shapes in the extra SHACL ({', '.join(extra)}): {e}"
+    return f"Invalid SHACL shapes: {e}"
 
 
 def merge_shacl(
@@ -244,17 +369,25 @@ def check_graph(
     External ``spdxId`` references declared in an ``ExternalMap`` are not
     reported as missing. When *error_external* is true, an ``spdxId`` that is
     both imported and defined in the document is reported as an error.
+
+    Raises:
+        ShaclShapesError: A shape in *shacl_graph* is malformed.
     """
     errors: List[str] = []
 
     # pyshacl.validate() has no return type annotation, so its result is
     # typed here via annotation to restore type checking for the rest of
     # this function.
-    validate_result: Tuple[bool, rdflib.Graph, str] = pyshacl.validate(
-        graph,
-        shacl_graph=shacl_graph,
-        ont_graph=shacl_graph,
-    )
+    try:
+        validate_result: Tuple[bool, rdflib.Graph, str] = pyshacl.validate(
+            graph,
+            shacl_graph=shacl_graph,
+            ont_graph=shacl_graph,
+        )
+    except pyshacl.errors.ReportableRuntimeError as shacl_err:
+        # Covers ShapeLoadError and ConstraintLoadError: a malformed shape,
+        # e.g. one with two sh:maxCount, from an extra SHACL file.
+        raise ShaclShapesError(str(shacl_err)) from shacl_err
     conforms, results, _ = validate_result
 
     if not conforms:
@@ -380,7 +513,7 @@ def validate(
     *,
     version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
-    extra_shacl: Iterable[str] = (),
+    extra_shacl: Union[ShaclLocation, Iterable[ShaclLocation]] = (),
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
@@ -392,10 +525,14 @@ def validate(
         check_merged: Also validate the graph formed by merging every document,
             which catches type errors across ``ExternalMap`` references. Skipped
             if any document already failed.
-        extra_shacl: Paths or URLs of additional SHACL shapes / OWL ontology
-            files (e.g. the definition of an SPDX 3 extension). Each is merged
-            into both the SHACL shapes graph and the ontology graph used for
-            validation, so the extension's own constraints are checked.
+        extra_shacl: A path or URL, or an iterable of them, of additional
+            SHACL shapes / OWL ontology files (e.g. the definition of an SPDX 3
+            extension). Each distinct file is merged into both the SHACL shapes
+            graph and the ontology graph used for validation, so the
+            extension's own constraints are checked. These files are trusted:
+            they can weaken SPDX validation, which emits an
+            :class:`ExtraShaclWarning`. They are loaded even if *sources* is
+            empty.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -403,13 +540,16 @@ def validate(
 
     Raises:
         SpdxValidateError: A document or an *extra_shacl* file cannot be
-            loaded, or documents declare incompatible versions.
+            loaded, a shape is malformed, or documents declare incompatible
+            versions.
         UnknownVersionError: *version* or a document ``@context`` is unknown.
     """
     if isinstance(sources, str):
         sources = [sources]
-    if isinstance(extra_shacl, str):
+    if isinstance(extra_shacl, (str, Path)):
         extra_shacl = [extra_shacl]
+    extra_locations = unique_shacl_locations(extra_shacl)
+    extra_graphs = [load_shacl(location) for location in extra_locations]
 
     resolved_version = _resolve_version(version)
 
@@ -431,8 +571,6 @@ def validate(
     # documents is non-empty, so the loop above set resolved_version at least once.
     assert resolved_version is not None
 
-    extra_graphs = [load_shacl(location) for location in extra_shacl]
-
     schema, shacl_graph = load_validation_data(resolved_version)
     if extra_graphs:
         shacl_graph = merge_shacl(shacl_graph, extra_graphs)
@@ -444,23 +582,26 @@ def validate(
             f"Invalid schema {resolved_version.schema_url}: {e}"
         ) from e
 
-    errors: List[ValidationError] = []
-    for doc in documents:
-        errors.extend(
-            _schema_error(doc.source, e) for e in validator.iter_errors(doc.data)
-        )
-        errors.extend(
-            ValidationError(doc.source, "shacl", msg)
-            for msg in check_graph(doc.graph, shacl_graph, resolved_version, True)
-        )
-
-    if len(documents) > 1 and check_merged and not errors:
-        merged = rdflib.Graph()
+    try:
+        errors: List[ValidationError] = []
         for doc in documents:
-            merged += doc.graph
-        errors.extend(
-            ValidationError("(merged)", "shacl", msg)
-            for msg in check_graph(merged, shacl_graph, resolved_version, False)
-        )
+            errors.extend(
+                _schema_error(doc.source, e) for e in validator.iter_errors(doc.data)
+            )
+            errors.extend(
+                ValidationError(doc.source, "shacl", msg)
+                for msg in check_graph(doc.graph, shacl_graph, resolved_version, True)
+            )
+
+        if len(documents) > 1 and check_merged and not errors:
+            merged = rdflib.Graph()
+            for doc in documents:
+                merged += doc.graph
+            errors.extend(
+                ValidationError("(merged)", "shacl", msg)
+                for msg in check_graph(merged, shacl_graph, resolved_version, False)
+            )
+    except ShaclShapesError as e:
+        raise ShaclShapesError(shacl_shapes_error(e, extra_locations)) from e
 
     return ValidationResult(errors)

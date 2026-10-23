@@ -51,6 +51,27 @@ used for validation. The ontology must therefore contain the extension classes'
 SPDX version being validated, e.g. `https://spdx.org/rdf/3.0.1/terms/`), so
 that `sh:class` constraints resolve.
 
+Only the RDFS/OWL axioms of the ontology are added to the data before
+validation (pyshacl "inoculates" the data graph with them): resources typed as
+RDFS/OWL classes or properties, triples such as `rdfs:subClassOf`,
+`rdfs:domain` and `rdfs:range`, and deep copies of `owl:NamedIndividual`
+resources. An extension's vocabulary individuals (e.g. the values of an
+enumeration checked with `sh:class`) must therefore be typed
+`owl:NamedIndividual` as well as with their class. `owl:imports` in a
+`--shacl` file are not followed; pass each file with its own `--shacl`. The
+same file given more than once is loaded once.
+
+`--shacl` files are trusted input. Because they are merged with the SPDX model,
+they can also weaken validation against SPDX itself, for example by
+deactivating an SPDX shape (`sh:deactivated true`), by redefining SPDX terms,
+or by declaring `owl:NamedIndividual` instances of SPDX classes, which are
+copied into every validated document. A warning is printed (and
+`spdx3_validate.ExtraShaclWarning` is emitted for library use) when a file has
+statements about terms in an SPDX namespace, `owl:NamedIndividual` instances of
+SPDX classes, or `sh:deactivated true`. Validation still runs with the file.
+A file whose shapes are malformed (e.g. two `sh:maxCount` on one property) is
+reported as an error.
+
 ## Using as a library
 
 `spdx3-validate` can also be used programmatically.

@@ -6,6 +6,8 @@
 
 from .core import (
     Document,
+    ExtraShaclWarning,
+    ShaclShapesError,
     SpdxValidateError,
     UnknownVersionError,
     ValidationError,
@@ -22,6 +24,8 @@ __all__ = [
     "ValidationError",
     "Document",
     "SpdxValidateError",
+    "ShaclShapesError",
+    "ExtraShaclWarning",
     "UnknownVersionError",
     "spdx3validate",
 ]

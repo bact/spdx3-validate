@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import halo
@@ -17,6 +19,9 @@ from .version import VERSION
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion
 from .core import (
     Document,
+    ExtraShaclWarning,
+    ShaclLocation,
+    ShaclShapesError,
     SpdxValidateError,
     UnknownVersionError,
     check_graph,
@@ -24,6 +29,8 @@ from .core import (
     load_validation_data,
     merge_shacl,
     schema_validator,
+    shacl_shapes_error,
+    unique_shacl_locations,
     _resolve_version,
 )
 
@@ -134,6 +141,7 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         dest="extra_shacl",
         help="Additional SHACL shapes / OWL ontology (e.g. the definition of an "
         "SPDX 3 extension) to validate against, merged with the SPDX model. "
+        "The file is trusted: it can change how SPDX itself is validated. "
         "May be given more than once",
     )
     parser.add_argument(
@@ -160,13 +168,41 @@ def spdx3validate(
     current_version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
     quiet: bool = True,
-    extra_shacl: Optional[List[str]] = None,
+    extra_shacl: Union[ShaclLocation, Sequence[ShaclLocation], None] = None,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
     except UnknownVersionError as e:
         print(str(e))
         return 1
+
+    if extra_shacl is None:
+        extra_shacl = []
+    elif isinstance(extra_shacl, (str, Path)):
+        extra_shacl = [extra_shacl]
+    extra_locations = unique_shacl_locations(extra_shacl)
+
+    # Load the extra SHACL first, so that a bad file is reported even when
+    # there are no documents to validate.
+    extra_graphs: List[rdflib.Graph] = []
+    for location in extra_locations:
+        with halo.Halo(f"Loading SHACL {location}", enabled=not quiet) as spinner:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ExtraShaclWarning)
+                try:
+                    extra_graphs.append(load_shacl(location))
+                except SpdxValidateError as e:
+                    spinner.fail()
+                    print(str(e))
+                    return 1
+            spinner.succeed()
+        for w in caught:
+            if issubclass(w.category, ExtraShaclWarning):
+                print(f"WARNING: {w.message}", file=sys.stderr)
+            else:
+                warnings.showwarning(
+                    w.message, w.category, w.filename, w.lineno, w.file, w.line
+                )
 
     documents: List[Document] = []
     for j in json_files:
@@ -196,17 +232,6 @@ def spdx3validate(
 
     # documents is non-empty, so the loop above set resolved_version at least once.
     assert resolved_version is not None
-
-    extra_graphs: List[rdflib.Graph] = []
-    for location in extra_shacl or []:
-        with halo.Halo(f"Loading SHACL {location}", enabled=not quiet) as spinner:
-            try:
-                extra_graphs.append(load_shacl(location))
-            except SpdxValidateError as e:
-                spinner.fail()
-                print(str(e))
-                return 1
-            spinner.succeed()
 
     with halo.Halo(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
@@ -243,7 +268,14 @@ def spdx3validate(
         with halo.Halo(
             f"Checking SHACL for {doc.source}", enabled=not quiet
         ) as spinner:
-            graph_errors = check_graph(doc.graph, shacl_graph, resolved_version, True)
+            try:
+                graph_errors = check_graph(
+                    doc.graph, shacl_graph, resolved_version, True
+                )
+            except ShaclShapesError as e:
+                spinner.fail()
+                print(shacl_shapes_error(e, extra_locations))
+                return 1
             if graph_errors:
                 spinner.fail()
             else:
@@ -261,9 +293,14 @@ def spdx3validate(
                 for doc in documents:
                     merged_g += doc.graph
 
-                graph_errors = check_graph(
-                    merged_g, shacl_graph, resolved_version, False
-                )
+                try:
+                    graph_errors = check_graph(
+                        merged_g, shacl_graph, resolved_version, False
+                    )
+                except ShaclShapesError as e:
+                    spinner.fail()
+                    print(shacl_shapes_error(e, extra_locations))
+                    return 1
                 if graph_errors:
                     spinner.fail()
                 else:

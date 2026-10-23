@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Community-Spec-1.0
+# SPDX-License-Identifier: MIT
 #
 # OWL ontology and SHACL shapes for the example SyntheticData SPDX 3 extension.
 # Written by hand in the style of https://spdx.org/rdf/3.0.1/spdx-model.ttl
