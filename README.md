@@ -74,10 +74,21 @@ reported as an error.
 
 When `--shacl` is given, every `extension` value must also have a type that is
 `Extension/Extension` or derives from it in the SPDX model or the supplied
-files. An extension whose type is unknown, for example because of a typo in its
-type IRI, or is not an `Extension`, is then reported. Without `--shacl`, as in
-the SPDX 3.0.1 model itself, extension types are not checked this way, since
-custom extension classes cannot be known in advance.
+files. In other words, every extension type used in the document must then be
+defined in a file passed with `--shacl` (or be an extension class of the SPDX
+model itself, such as `CdxPropertiesExtension`); give one `--shacl` per
+extension used. An extension whose type is unknown, for example because of a
+typo in its type IRI, or is not an `Extension`, is then reported. A value that
+the SPDX model already rejects as a class known not to be an `Extension` (e.g.
+a `Person`) is reported once, by the model's own check. An extension value
+given only as an IRI that is listed in an `ExternalMap` import is, like other
+external references, not reported when its document is validated on its own.
+
+Without `--shacl`, as in the SPDX 3.0.1 model itself, extension types are not
+checked this way, since custom extension classes cannot be known in advance.
+The SPDX 3.0.0 model already requires every `extension` value to be an
+`Extension`, with or without `--shacl`, so for 3.0.0 documents this check is
+not added again.
 
 ## Using as a library
 

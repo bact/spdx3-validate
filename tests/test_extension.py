@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: MIT
 """Test validation of SPDX 3 extensions with additional SHACL (``--shacl``)."""
 
+import json
 import warnings
 from pathlib import Path
 from typing import List, Tuple, Union
@@ -402,11 +403,84 @@ def test_extension_class_shape_uses_version_iris(version: SpdxVersion) -> None:
     ) in shape
 
 
+def _element_extension_class(version: SpdxVersion) -> rdflib.Graph:
+    """A model fragment with the positive check on Core/Element, as in 3.0.0."""
+    model = rdflib.Graph()
+    prop = rdflib.BNode()
+    element = URIRef(version.rdf_base + "Core/Element")
+    model.add((element, SH.property, prop))
+    model.add((prop, SH.path, URIRef(version.rdf_base + "Core/extension")))
+    model.add((prop, SH["class"], URIRef(version.rdf_base + "Extension/Extension")))
+    return model
+
+
 @pytest.mark.parametrize("version", SPDX_VERSIONS, ids=lambda v: v.pretty)
 def test_extension_class_shape_skipped_if_model_has_it(version: SpdxVersion) -> None:
     """No duplicate shape is added when the model already has the check."""
-    model = extension_class_shape(version, rdflib.Graph())
+    model = _element_extension_class(version)
     assert len(extension_class_shape(version, model)) == 0
+
+
+@pytest.mark.parametrize("version", SPDX_VERSIONS, ids=lambda v: v.pretty)
+def test_extension_class_shape_needs_check_on_element(version: SpdxVersion) -> None:
+    """Only a check attached to the Core/Element shape counts as the model's."""
+    shape = extension_class_shape(version, rdflib.Graph())
+    assert len(extension_class_shape(version, shape)) > 0
+
+
+def test_extension_own_extension_shape_keeps_check(tmp_path: Path) -> None:
+    """An extension file with its own ``extension``/``sh:class Extension``
+    property shape does not disable the check for the rest of the document."""
+    ttl = _write_ttl(
+        tmp_path,
+        "@prefix spdx-ext: <https://spdx.org/rdf/3.0.1/terms/Extension/> .\n"
+        "ex:Foo a owl:Class, sh:NodeShape ; rdfs:subClassOf spdx-ext:Extension ;\n"
+        "    sh:property [ sh:path core:extension ; sh:class spdx-ext:Extension ] .\n",
+    )
+    result = _validate(TYPO_EXT_DOC, [ttl, EXT_SHACL])
+    assert len(result.errors) == 1
+    assert EXTENSION_CLASS_MESSAGE in result.errors[0].message
+
+
+DENY_LISTED_EXT_DOC = EXT_DIR / "deny-listed-extension-type.spdx3.json"
+
+
+def test_deny_listed_extension_type_reported_once() -> None:
+    """A value already rejected by the model's deny-list (here a Person) is
+    not reported again by the positive check."""
+    without = _validate(DENY_LISTED_EXT_DOC, [])
+    with_shacl = _validate(DENY_LISTED_EXT_DOC, [EXT_SHACL])
+    assert len(with_shacl.errors) == len(without.errors)
+    messages = "\n".join(e.message for e in with_shacl.errors)
+    assert "NotConstraintComponent" in messages
+    assert EXTENSION_CLASS_MESSAGE not in messages
+
+
+IMPORTED_EXT_DOC = EXT_DIR / "imported-iri-extension.spdx3.json"
+
+
+def test_imported_iri_extension_not_reported() -> None:
+    """An IRI extension value listed in an ExternalMap, so defined in another
+    document, is not reported when validating the document on its own."""
+    result = _validate(IMPORTED_EXT_DOC, [EXT_SHACL])
+    assert result.valid, str(result)
+
+
+def test_unimported_iri_extension_reported(tmp_path: Path) -> None:
+    """An IRI extension value that is not imported is still reported."""
+    data = json.loads(IMPORTED_EXT_DOC.read_text(encoding="utf-8"))
+    for obj in data["@graph"]:
+        obj.pop("import", None)
+    doc = tmp_path / "unimported-iri-extension.spdx3.json"
+    doc.write_text(json.dumps(data), encoding="utf-8")
+    result = _validate(doc, [EXT_SHACL])
+    assert len(result.errors) == 1
+    assert EXTENSION_CLASS_MESSAGE in result.errors[0].message
+
+
+def test_extension_class_message_is_not_cli_specific() -> None:
+    """The message is also shown to library users, so names no CLI option."""
+    assert "--shacl" not in EXTENSION_CLASS_MESSAGE
 
 
 @pytest.mark.parametrize(

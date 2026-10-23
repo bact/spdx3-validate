@@ -328,13 +328,13 @@ def merge_shacl(
 
 EXTENSION_CLASS_MESSAGE = (
     "Value of extension is not of a class derived from Extension. "
-    "Its type is unknown or not an Extension; is it defined in a supplied "
-    "extension ontology (--shacl), using the term IRIs of this SPDX version?"
+    "Its type is unknown or not an Extension; is it defined in the supplied "
+    "extension definitions, using the term IRIs of this SPDX version?"
 )
 
 
 def extension_class_shape(
-    version: SpdxVersion, shacl_graph: rdflib.Graph
+    version: SpdxVersion, model_graph: rdflib.Graph
 ) -> rdflib.Graph:
     """Return a SHACL shape requiring every ``Core/extension`` value to be an
     ``Extension/Extension``.
@@ -349,16 +349,22 @@ def extension_class_shape(
     type IRI) or not an Extension is reported.
 
     The IRIs are built from the term base of *version* (``.../3.0.0/terms/``
-    or ``.../3.0.1/terms/``). An empty graph is returned if *shacl_graph*
-    already has this positive check, as the SPDX 3.0.0 model does, so that
-    each violation is not reported twice.
+    or ``.../3.0.1/terms/``). *model_graph* must be the SPDX model alone,
+    before any extension definitions are merged in. An empty graph is returned
+    if its ``Core/Element`` shape already has this positive check, as the SPDX
+    3.0.0 model does, so that each violation is not reported twice.
     """
+    element = URIRef(version.rdf_base + "Core/Element")
     extension_prop = URIRef(version.rdf_base + "Core/extension")
     extension_cls = URIRef(version.rdf_base + "Extension/Extension")
 
     shape = rdflib.Graph()
-    for prop_shape in shacl_graph.subjects(SH.path, extension_prop):
-        if (prop_shape, SH["class"], extension_cls) in shacl_graph:
+    for prop_shape in model_graph.objects(element, SH.property):
+        if (prop_shape, SH.path, extension_prop) in model_graph and (
+            prop_shape,
+            SH["class"],
+            extension_cls,
+        ) in model_graph:
             return shape
 
     node_shape = BNode()
@@ -460,6 +466,9 @@ def check_graph(
                 return n.n3()
             return "-"
 
+        extension_prop = URIRef(current_version.rdf_base + "Core/extension")
+        extension_cls = URIRef(current_version.rdf_base + "Extension/Extension")
+
         # Collect all external map references
         external_spdxids: set[str] = set()
         for spdxid in current_version.get_imports(graph):
@@ -488,13 +497,15 @@ def check_graph(
             ) not in results:
                 return False
 
+            # A reference to an Element, or an extension value given as an IRI
+            # (whose class is checked by extension_class_shape() or the model)
             is_element = False
             for ss in results.objects(r, SH.sourceShape):
                 if is_element:
                     break
 
                 for cls in results.objects(ss, SH["class"]):
-                    is_element = derives_from(
+                    is_element = cls == extension_cls or derives_from(
                         cls,
                         URIRef(current_version.rdf_base + "Core/Element"),
                         shacl_graph,
@@ -511,9 +522,40 @@ def check_graph(
 
             return False
 
+        def check_extension_class_duplicate(r: Node) -> bool:
+            """True for a positive extension class check result whose value the
+            model's deny-list of non-Extension classes already rejected."""
+            if (
+                r,
+                SH.sourceConstraintComponent,
+                SH.ClassConstraintComponent,
+            ) not in results or (r, SH.resultPath, extension_prop) not in results:
+                return False
+            if not any(
+                (ss, SH["class"], extension_cls) in results
+                for ss in results.objects(r, SH.sourceShape)
+            ):
+                return False
+
+            focus = results.value(r, SH.focusNode)
+            value = results.value(r, SH.value)
+            for other in results.subjects(SH.value, value):
+                if (
+                    (other, SH.focusNode, focus) in results
+                    and (other, SH.resultPath, extension_prop) in results
+                    and (
+                        other,
+                        SH.sourceConstraintComponent,
+                        SH.NotConstraintComponent,
+                    )
+                    in results
+                ):
+                    return True
+            return False
+
         for report in results.subjects(RDF.type, SH.ValidationReport):
             for r in results.objects(report, SH.result):
-                if check_external_ref_error(r):
+                if check_external_ref_error(r) or check_extension_class_duplicate(r):
                     continue
 
                 e: List[str] = []
@@ -637,8 +679,8 @@ def validate(
 
     schema, shacl_graph = load_validation_data(resolved_version)
     if extra_graphs:
-        shacl_graph = merge_shacl(shacl_graph, extra_graphs)
-        shacl_graph += extension_class_shape(resolved_version, shacl_graph)
+        extension_shape = extension_class_shape(resolved_version, shacl_graph)
+        shacl_graph = merge_shacl(shacl_graph, extra_graphs + [extension_shape])
 
     try:
         validator = schema_validator(schema)

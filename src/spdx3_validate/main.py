@@ -241,8 +241,8 @@ def spdx3validate(
     ) as spinner:
         schema, shacl_graph = load_validation_data(resolved_version)
         if extra_graphs:
-            shacl_graph = merge_shacl(shacl_graph, extra_graphs)
-            shacl_graph += extension_class_shape(resolved_version, shacl_graph)
+            extension_shape = extension_class_shape(resolved_version, shacl_graph)
+            shacl_graph = merge_shacl(shacl_graph, extra_graphs + [extension_shape])
         spinner.succeed()
 
     errors = 0
