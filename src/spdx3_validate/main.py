@@ -25,6 +25,7 @@ from .core import (
     SpdxValidateError,
     UnknownVersionError,
     check_graph,
+    extension_class_shape,
     load_shacl,
     load_validation_data,
     merge_shacl,
@@ -142,6 +143,8 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         help="Additional SHACL shapes / OWL ontology (e.g. the definition of an "
         "SPDX 3 extension) to validate against, merged with the SPDX model. "
         "The file is trusted: it can change how SPDX itself is validated. "
+        "When given, every extension value must also be of a class derived "
+        "from Extension in the SPDX model or these files. "
         "May be given more than once",
     )
     parser.add_argument(
@@ -239,6 +242,7 @@ def spdx3validate(
         schema, shacl_graph = load_validation_data(resolved_version)
         if extra_graphs:
             shacl_graph = merge_shacl(shacl_graph, extra_graphs)
+            shacl_graph += extension_class_shape(resolved_version, shacl_graph)
         spinner.succeed()
 
     errors = 0

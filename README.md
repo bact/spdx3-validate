@@ -72,6 +72,13 @@ SPDX classes, or `sh:deactivated true`. Validation still runs with the file.
 A file whose shapes are malformed (e.g. two `sh:maxCount` on one property) is
 reported as an error.
 
+When `--shacl` is given, every `extension` value must also have a type that is
+`Extension/Extension` or derives from it in the SPDX model or the supplied
+files. An extension whose type is unknown, for example because of a typo in its
+type IRI, or is not an `Extension`, is then reported. Without `--shacl`, as in
+the SPDX 3.0.1 model itself, extension types are not checked this way, since
+custom extension classes cannot be known in advance.
+
 ## Using as a library
 
 `spdx3-validate` can also be used programmatically.

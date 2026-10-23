@@ -6,21 +6,26 @@
 
 import warnings
 from pathlib import Path
-from typing import List, Union
+from typing import List, Tuple, Union
 
 import pyshacl
 import pyshacl.errors
 import pytest
 import rdflib
+from rdflib import SH, URIRef
+from rdflib.term import Node
 
 import spdx3_validate
 from spdx3_validate.core import (
+    EXTENSION_CLASS_MESSAGE,
     ExtraShaclWarning,
     check_graph,
+    extension_class_shape,
     load_shacl,
+    load_validation_data,
     shacl_format,
 )
-from spdx3_validate.spdx_versions import SPDX_VERSIONS
+from spdx3_validate.spdx_versions import SPDX_VERSIONS, SpdxVersion
 
 EXT_DIR = Path(__file__).parent / "data" / "3.0.1" / "extension"
 EXT_SHACL = EXT_DIR / "synthetic-data.ttl"
@@ -347,3 +352,73 @@ def test_shape_load_errors_reported(
     monkeypatch.setattr(pyshacl, "validate", fail)
     with pytest.raises(spdx3_validate.ShaclShapesError):
         check_graph(rdflib.Graph(), rdflib.Graph(), SPDX_VERSIONS[-1], True)
+
+
+# --- Positive check that extension values are Extension subclasses ----------
+
+TYPO_EXT_DOC = EXT_DIR / "typo-extension-type.spdx3.json"
+
+
+def test_extension_type_typo_reported_with_shacl() -> None:
+    """An extension whose type IRI has a typo is reported with the SHACL."""
+    result = _validate(TYPO_EXT_DOC, [str(EXT_SHACL)])
+    assert not result.valid
+    assert len(result.errors) == 1
+    message = result.errors[0].message
+    assert "ClassConstraintComponent" in message
+    assert "https://spdx.org/rdf/3.0.1/terms/Extension/Extension" in message
+    assert EXTENSION_CLASS_MESSAGE in message
+
+
+def test_extension_type_typo_not_reported_without_shacl() -> None:
+    """Without extension definitions extension types stay open-world."""
+    result = _validate(TYPO_EXT_DOC, [])
+    assert result.valid, str(result)
+
+
+def _shape_classes(shape: rdflib.Graph) -> List[Tuple[Node, Node]]:
+    return [
+        (path, cls)
+        for prop in shape.subjects(SH["class"], None)
+        for path in shape.objects(prop, SH.path)
+        for cls in shape.objects(prop, SH["class"])
+    ]
+
+
+@pytest.mark.parametrize("version", SPDX_VERSIONS, ids=lambda v: v.pretty)
+def test_extension_class_shape_uses_version_iris(version: SpdxVersion) -> None:
+    """The shape is built from the term base IRI of the SPDX version."""
+    shape = extension_class_shape(version, rdflib.Graph())
+    assert _shape_classes(shape) == [
+        (
+            URIRef(version.rdf_base + "Core/extension"),
+            URIRef(version.rdf_base + "Extension/Extension"),
+        )
+    ]
+    assert (
+        None,
+        SH.targetSubjectsOf,
+        URIRef(version.rdf_base + "Core/extension"),
+    ) in shape
+
+
+@pytest.mark.parametrize("version", SPDX_VERSIONS, ids=lambda v: v.pretty)
+def test_extension_class_shape_skipped_if_model_has_it(version: SpdxVersion) -> None:
+    """No duplicate shape is added when the model already has the check."""
+    model = extension_class_shape(version, rdflib.Graph())
+    assert len(extension_class_shape(version, model)) == 0
+
+
+@pytest.mark.parametrize(
+    "pretty, expected", [("3.0.0", False), ("3.0.1", True)], ids=["3.0.0", "3.0.1"]
+)
+def test_extension_class_shape_against_published_model(
+    pretty: str, expected: bool
+) -> None:
+    """SPDX 3.0.0 already requires sh:class Extension; 3.0.1 does not."""
+    version = next(v for v in SPDX_VERSIONS if v.pretty == pretty)
+    try:
+        _, shacl_graph = load_validation_data(version)
+    except OSError as e:
+        pytest.skip(f"network unavailable: {e}")
+    assert bool(len(extension_class_shape(version, shacl_graph))) is expected

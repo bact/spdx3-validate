@@ -28,7 +28,7 @@ import jsonschema
 import pyshacl
 import pyshacl.errors
 import rdflib
-from rdflib import OWL, RDF, RDFS, SH, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, SH, BNode, Literal, URIRef
 from rdflib.term import Node
 
 from .spdx_versions import SPDX_VERSIONS, SpdxVersion, find_version
@@ -326,6 +326,52 @@ def merge_shacl(
     return merged
 
 
+EXTENSION_CLASS_MESSAGE = (
+    "Value of extension is not of a class derived from Extension. "
+    "Its type is unknown or not an Extension; is it defined in a supplied "
+    "extension ontology (--shacl), using the term IRIs of this SPDX version?"
+)
+
+
+def extension_class_shape(
+    version: SpdxVersion, shacl_graph: rdflib.Graph
+) -> rdflib.Graph:
+    """Return a SHACL shape requiring every ``Core/extension`` value to be an
+    ``Extension/Extension``.
+
+    SPDX 3.0.1 only checks ``Core/extension`` values against a deny-list of
+    classes known not to derive from ``Extension``, because subclasses defined
+    by custom extensions cannot be known in advance. Once extension
+    definitions are supplied (see :func:`load_shacl`), this shape adds the
+    positive check: each value must have an ``rdf:type`` that is, via
+    ``rdfs:subClassOf`` in the merged ontology, a subclass of
+    ``Extension/Extension``. A value whose type is unknown (e.g. a typo in the
+    type IRI) or not an Extension is reported.
+
+    The IRIs are built from the term base of *version* (``.../3.0.0/terms/``
+    or ``.../3.0.1/terms/``). An empty graph is returned if *shacl_graph*
+    already has this positive check, as the SPDX 3.0.0 model does, so that
+    each violation is not reported twice.
+    """
+    extension_prop = URIRef(version.rdf_base + "Core/extension")
+    extension_cls = URIRef(version.rdf_base + "Extension/Extension")
+
+    shape = rdflib.Graph()
+    for prop_shape in shacl_graph.subjects(SH.path, extension_prop):
+        if (prop_shape, SH["class"], extension_cls) in shacl_graph:
+            return shape
+
+    node_shape = BNode()
+    prop_shape = BNode()
+    shape.add((node_shape, RDF.type, SH.NodeShape))
+    shape.add((node_shape, SH.targetSubjectsOf, extension_prop))
+    shape.add((node_shape, SH.property, prop_shape))
+    shape.add((prop_shape, SH.path, extension_prop))
+    shape.add((prop_shape, SH["class"], extension_cls))
+    shape.add((prop_shape, SH.message, Literal(EXTENSION_CLASS_MESSAGE, lang="en")))
+    return shape
+
+
 def schema_validator(schema: Dict[str, Any]) -> jsonschema.protocols.Validator:
     """Return a ``jsonschema`` validator, checking that *schema* is well formed.
 
@@ -544,6 +590,9 @@ def validate(
             they can weaken SPDX validation, which emits an
             :class:`ExtraShaclWarning`. They are loaded even if *sources* is
             empty.
+            When any is given, every ``Core/extension`` value must also be of
+            a class derived from ``Extension/Extension`` in the SPDX model or
+            in these files (see :func:`extension_class_shape`).
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
@@ -589,6 +638,7 @@ def validate(
     schema, shacl_graph = load_validation_data(resolved_version)
     if extra_graphs:
         shacl_graph = merge_shacl(shacl_graph, extra_graphs)
+        shacl_graph += extension_class_shape(resolved_version, shacl_graph)
 
     try:
         validator = schema_validator(schema)
