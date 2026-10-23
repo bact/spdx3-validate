@@ -20,7 +20,9 @@ from .core import (
     SpdxValidateError,
     UnknownVersionError,
     check_graph,
+    load_shacl,
     load_validation_data,
+    merge_shacl,
     schema_validator,
     _resolve_version,
 )
@@ -125,6 +127,16 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
         help="Do not validate merged documents",
     )
     parser.add_argument(
+        "--shacl",
+        metavar="FILE_OR_URL",
+        default=[],
+        action="append",
+        dest="extra_shacl",
+        help="Additional SHACL shapes / OWL ontology (e.g. the definition of an "
+        "SPDX 3 extension) to validate against, merged with the SPDX model. "
+        "May be given more than once",
+    )
+    parser.add_argument(
         "--quiet",
         "-q",
         action="store_true",
@@ -134,7 +146,13 @@ def main(cmdline_args: Optional[Sequence[str]] = None) -> int:
 
     current_version = None if args.spdx_version == "auto" else args.spdx_version
 
-    return spdx3validate(args.json, current_version, args.check_merged, args.quiet)
+    return spdx3validate(
+        args.json,
+        current_version,
+        args.check_merged,
+        args.quiet,
+        extra_shacl=args.extra_shacl,
+    )
 
 
 def spdx3validate(
@@ -142,6 +160,7 @@ def spdx3validate(
     current_version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
     quiet: bool = True,
+    extra_shacl: Optional[List[str]] = None,
 ) -> int:
     try:
         resolved_version = _resolve_version(current_version)
@@ -178,10 +197,23 @@ def spdx3validate(
     # documents is non-empty, so the loop above set resolved_version at least once.
     assert resolved_version is not None
 
+    extra_graphs: List[rdflib.Graph] = []
+    for location in extra_shacl or []:
+        with halo.Halo(f"Loading SHACL {location}", enabled=not quiet) as spinner:
+            try:
+                extra_graphs.append(load_shacl(location))
+            except SpdxValidateError as e:
+                spinner.fail()
+                print(str(e))
+                return 1
+            spinner.succeed()
+
     with halo.Halo(
         f"Loading SPDX {resolved_version.pretty}", enabled=not quiet
     ) as spinner:
         schema, shacl_graph = load_validation_data(resolved_version)
+        if extra_graphs:
+            shacl_graph = merge_shacl(shacl_graph, extra_graphs)
         spinner.succeed()
 
     errors = 0

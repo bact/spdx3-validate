@@ -158,6 +158,43 @@ def load_validation_data(version: SpdxVersion) -> Tuple[Dict[str, Any], rdflib.G
     return schema, shacl_graph
 
 
+def load_shacl(location: str) -> rdflib.Graph:
+    """Load an additional SHACL shapes / OWL ontology file from a path or URL.
+
+    This is how the definitions of an SPDX 3 extension (its classes, their
+    ``rdfs:subClassOf`` links to ``Extension/Extension``, and its SHACL
+    shapes) are supplied. The RDF format is guessed from the file extension,
+    falling back to Turtle.
+
+    Raises:
+        SpdxValidateError: The file cannot be read or parsed.
+    """
+    fmt = rdflib.util.guess_format(location) or "turtle"
+    graph = rdflib.Graph()
+    try:
+        graph.parse(location, format=fmt)
+    except Exception as e:
+        raise SpdxValidateError(f"Unable to load SHACL from {location}: {e}") from e
+    return graph
+
+
+def merge_shacl(
+    shacl_graph: rdflib.Graph, extra: Iterable[rdflib.Graph]
+) -> rdflib.Graph:
+    """Return a new graph holding *shacl_graph* plus every graph in *extra*.
+
+    :func:`check_graph` passes the same graph to pyshacl as both the shapes
+    graph and the ontology graph, so merging extra definitions here makes
+    their shapes run *and* their ``rdfs:subClassOf`` triples visible to
+    ``sh:class`` checks. *shacl_graph* itself is left unmodified.
+    """
+    merged = rdflib.Graph()
+    merged += shacl_graph
+    for g in extra:
+        merged += g
+    return merged
+
+
 def schema_validator(schema: Dict[str, Any]) -> jsonschema.protocols.Validator:
     """Return a ``jsonschema`` validator, checking that *schema* is well formed.
 
@@ -343,6 +380,7 @@ def validate(
     *,
     version: Union[str, SpdxVersion, None] = None,
     check_merged: bool = False,
+    extra_shacl: Iterable[str] = (),
 ) -> ValidationResult:
     """Validate one or more SPDX 3 documents against schema and SHACL rules.
 
@@ -354,18 +392,24 @@ def validate(
         check_merged: Also validate the graph formed by merging every document,
             which catches type errors across ``ExternalMap`` references. Skipped
             if any document already failed.
+        extra_shacl: Paths or URLs of additional SHACL shapes / OWL ontology
+            files (e.g. the definition of an SPDX 3 extension). Each is merged
+            into both the SHACL shapes graph and the ontology graph used for
+            validation, so the extension's own constraints are checked.
 
     Returns:
         ValidationResult: The collected :class:`ValidationError` findings
             (empty when everything is valid).
 
     Raises:
-        SpdxValidateError: A document cannot be loaded, or documents declare
-            incompatible versions.
+        SpdxValidateError: A document or an *extra_shacl* file cannot be
+            loaded, or documents declare incompatible versions.
         UnknownVersionError: *version* or a document ``@context`` is unknown.
     """
     if isinstance(sources, str):
         sources = [sources]
+    if isinstance(extra_shacl, str):
+        extra_shacl = [extra_shacl]
 
     resolved_version = _resolve_version(version)
 
@@ -387,7 +431,11 @@ def validate(
     # documents is non-empty, so the loop above set resolved_version at least once.
     assert resolved_version is not None
 
+    extra_graphs = [load_shacl(location) for location in extra_shacl]
+
     schema, shacl_graph = load_validation_data(resolved_version)
+    if extra_graphs:
+        shacl_graph = merge_shacl(shacl_graph, extra_graphs)
 
     try:
         validator = schema_validator(schema)

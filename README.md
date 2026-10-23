@@ -23,6 +23,34 @@ useful. This includes:
 python3 -m pip install spdx3-validate
 ```
 
+## Usage
+
+Validate one or more documents (a path, a URL, or `-` for standard input):
+
+```shell
+spdx3-validate --json doc.spdx3.json
+spdx3-validate --json sbom.spdx3.json --json external.spdx3.json
+```
+
+Run `spdx3-validate --help` for all options.
+
+### Validating extensions
+
+The SPDX 3 model cannot know about the classes and constraints of a custom
+extension, so by default an extension's own properties are not checked. Pass
+the extension's OWL ontology and SHACL shapes (any RDF format, as a path or a
+URL) with `--shacl`, which may be given more than once:
+
+```shell
+spdx3-validate --shacl my-extension.ttl --json doc.spdx3.json
+```
+
+Each file is merged into both the SHACL shapes graph and the ontology graph
+used for validation. The ontology must therefore contain the extension classes'
+`rdfs:subClassOf` links to `Extension/Extension` (using the term IRIs of the
+SPDX version being validated, e.g. `https://spdx.org/rdf/3.0.1/terms/`), so
+that `sh:class` constraints resolve.
+
 ## Using as a library
 
 `spdx3-validate` can also be used programmatically.
@@ -45,6 +73,9 @@ for error in result.errors:
   pass `version="X.Y"` to force one.
 - Set `check_merged=True` to also validate the merged graph of several
   documents together.
+- Pass `extra_shacl=["my-extension.ttl"]` to also validate against
+  additional SHACL shapes / OWL ontologies, such as the definition of an
+  extension (the library equivalent of `--shacl`).
 - A document that cannot be loaded (missing `@context`, unknown version,
   incompatible versions) raises `spdx3_validate.SpdxValidateError`.
 

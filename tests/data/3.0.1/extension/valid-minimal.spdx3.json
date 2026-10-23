@@ -1,0 +1,57 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "CreationInfo",
+      "@id": "_:creationinfo",
+      "created": "2026-10-23T00:00:00Z",
+      "createdBy": [
+        "https://example.org/spdx/agent/alice"
+      ],
+      "specVersion": "3.0.1"
+    },
+    {
+      "type": "Person",
+      "spdxId": "https://example.org/spdx/agent/alice",
+      "name": "Alice Example",
+      "creationInfo": "_:creationinfo"
+    },
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://example.org/spdx/doc/synthetic-data-minimal",
+      "name": "SyntheticData extension example (minimal)",
+      "creationInfo": "_:creationinfo",
+      "profileConformance": [
+        "core",
+        "software",
+        "dataset"
+      ],
+      "rootElement": [
+        "https://example.org/spdx/dataset/instruct-mix"
+      ],
+      "element": [
+        "https://example.org/spdx/agent/alice",
+        "https://example.org/spdx/dataset/instruct-mix"
+      ]
+    },
+    {
+      "type": "dataset_DatasetPackage",
+      "spdxId": "https://example.org/spdx/dataset/instruct-mix",
+      "name": "instruct-mix",
+      "software_packageVersion": "1.0",
+      "software_primaryPurpose": "data",
+      "dataset_datasetType": [
+        "text"
+      ],
+      "creationInfo": "_:creationinfo",
+      "extension": [
+        {
+          "type": "https://example.org/spdx3-ext/synthetic-data/SyntheticDataExtension",
+          "https://example.org/spdx3-ext/synthetic-data/generationMethod": {
+            "@id": "https://example.org/spdx3-ext/synthetic-data/DataGenerationMethodType/machineGenerated"
+          }
+        }
+      ]
+    }
+  ]
+}

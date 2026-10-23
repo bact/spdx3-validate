@@ -1,0 +1,82 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "CreationInfo",
+      "@id": "_:creationinfo",
+      "created": "2026-10-23T00:00:00Z",
+      "createdBy": ["https://example.org/spdx/agent/alice"],
+      "specVersion": "3.0.1"
+    },
+    {
+      "type": "Person",
+      "spdxId": "https://example.org/spdx/agent/alice",
+      "name": "Alice Example",
+      "creationInfo": "_:creationinfo"
+    },
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://example.org/spdx/doc/synthetic-data-full",
+      "name": "SyntheticData extension example (full)",
+      "creationInfo": "_:creationinfo",
+      "profileConformance": ["core", "software", "ai", "dataset"],
+      "rootElement": ["https://example.org/spdx/dataset/instruct-mix"],
+      "element": [
+        "https://example.org/spdx/agent/alice",
+        "https://example.org/spdx/model/teacher-llm",
+        "https://example.org/spdx/dataset/instruct-mix",
+        "https://example.org/spdx/rel/teacher-generates-dataset"
+      ]
+    },
+    {
+      "type": "ai_AIPackage",
+      "spdxId": "https://example.org/spdx/model/teacher-llm",
+      "name": "teacher-llm",
+      "software_packageVersion": "2.1",
+      "software_primaryPurpose": "model",
+      "creationInfo": "_:creationinfo"
+    },
+    {
+      "type": "dataset_DatasetPackage",
+      "spdxId": "https://example.org/spdx/dataset/instruct-mix",
+      "name": "instruct-mix",
+      "software_packageVersion": "1.0",
+      "software_primaryPurpose": "data",
+      "dataset_datasetType": ["text"],
+      "creationInfo": "_:creationinfo",
+      "extension": [
+        {
+          "type": "https://example.org/spdx3-ext/synthetic-data/SyntheticDataExtension",
+          "https://example.org/spdx3-ext/synthetic-data/generationMethod": {
+            "@id": "https://example.org/spdx3-ext/synthetic-data/DataGenerationMethodType/mixed"
+          },
+          "https://example.org/spdx3-ext/synthetic-data/syntheticFraction": {
+            "@value": "0.35",
+            "@type": "http://www.w3.org/2001/XMLSchema#decimal"
+          },
+          "https://example.org/spdx3-ext/synthetic-data/generatorModel": {
+            "@id": "https://example.org/spdx/model/teacher-llm"
+          }
+        },
+        {
+          "type": "extension_CdxPropertiesExtension",
+          "extension_cdxProperty": [
+            {
+              "type": "extension_CdxPropertyEntry",
+              "extension_cdxPropName": "example:generation-prompt-set",
+              "extension_cdxPropValue": "self-instruct-v3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://example.org/spdx/rel/teacher-generates-dataset",
+      "from": "https://example.org/spdx/model/teacher-llm",
+      "relationshipType": "generates",
+      "to": ["https://example.org/spdx/dataset/instruct-mix"],
+      "creationInfo": "_:creationinfo"
+    }
+  ]
+}
