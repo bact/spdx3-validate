@@ -4,6 +4,9 @@
 # SPDX-FileCopyrightText: 2024 Joshua Watt
 # SPDX-FileType: SOURCE
 # SPDX-License-Identifier: MIT
+import sys
+
 from .main import main
 
-main()
+if __name__ == "__main__":
+    sys.exit(main())
