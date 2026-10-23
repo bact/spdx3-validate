@@ -283,6 +283,12 @@ def load_shacl(location: ShaclLocation) -> rdflib.Graph:
     Raises:
         SpdxValidateError: The file cannot be read or parsed.
     """
+    return _load_shacl(location, stacklevel=3)
+
+
+def _load_shacl(location: ShaclLocation, stacklevel: int) -> rdflib.Graph:
+    """Implement :func:`load_shacl`, warning at *stacklevel* (counted from
+    this function) so that warnings point at the user's call."""
     location = str(location)
     graph = rdflib.Graph()
     try:
@@ -291,7 +297,7 @@ def load_shacl(location: ShaclLocation) -> rdflib.Graph:
         raise SpdxValidateError(f"Unable to load SHACL from {location}: {e}") from e
 
     for message in extra_shacl_warnings(graph, location):
-        warnings.warn(message, ExtraShaclWarning, stacklevel=2)
+        warnings.warn(message, ExtraShaclWarning, stacklevel=stacklevel)
     return graph
 
 
@@ -384,9 +390,14 @@ def check_graph(
             shacl_graph=shacl_graph,
             ont_graph=shacl_graph,
         )
-    except pyshacl.errors.ReportableRuntimeError as shacl_err:
-        # Covers ShapeLoadError and ConstraintLoadError: a malformed shape,
-        # e.g. one with two sh:maxCount, from an extra SHACL file.
+    except (
+        pyshacl.errors.ShapeLoadError,
+        pyshacl.errors.ConstraintLoadError,
+        pyshacl.errors.RuleLoadError,
+    ) as shacl_err:
+        # A malformed shape, e.g. one with two sh:maxCount, from an extra
+        # SHACL file. Other pyshacl errors are not about the shapes, so they
+        # propagate unchanged.
         raise ShaclShapesError(str(shacl_err)) from shacl_err
     conforms, results, _ = validate_result
 
@@ -549,7 +560,11 @@ def validate(
     if isinstance(extra_shacl, (str, Path)):
         extra_shacl = [extra_shacl]
     extra_locations = unique_shacl_locations(extra_shacl)
-    extra_graphs = [load_shacl(location) for location in extra_locations]
+    extra_graphs: List[rdflib.Graph] = []
+    for location in extra_locations:
+        # A plain loop (not a comprehension, which is its own frame before
+        # Python 3.12) so that the warning points at validate()'s caller.
+        extra_graphs.append(_load_shacl(location, stacklevel=3))
 
     resolved_version = _resolve_version(version)
 

@@ -8,11 +8,19 @@ import warnings
 from pathlib import Path
 from typing import List, Union
 
+import pyshacl
+import pyshacl.errors
 import pytest
 import rdflib
 
 import spdx3_validate
-from spdx3_validate.core import ExtraShaclWarning, load_shacl, shacl_format
+from spdx3_validate.core import (
+    ExtraShaclWarning,
+    check_graph,
+    load_shacl,
+    shacl_format,
+)
+from spdx3_validate.spdx_versions import SPDX_VERSIONS
 
 EXT_DIR = Path(__file__).parent / "data" / "3.0.1" / "extension"
 EXT_SHACL = EXT_DIR / "synthetic-data.ttl"
@@ -285,3 +293,57 @@ def test_cli_extra_shacl_warning_printed(
     err = capsys.readouterr().err
     assert "WARNING" in err
     assert "sh:deactivated" in err
+
+
+def test_load_shacl_warning_points_at_caller(tmp_path: Path) -> None:
+    """The warning is attributed to the caller's line, not to the library."""
+    ttl = _write_ttl(tmp_path, "core:Element sh:deactivated true .\n")
+    with pytest.warns(ExtraShaclWarning) as direct:
+        load_shacl(ttl)
+    assert {w.filename for w in direct} == {__file__}
+    with pytest.warns(ExtraShaclWarning) as via_validate:
+        spdx3_validate.validate([], extra_shacl=ttl)
+    assert {w.filename for w in via_validate} == {__file__}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pyshacl.errors.ValidationFailure("boom"),
+        pyshacl.errors.ReportableRuntimeError("boom"),
+    ],
+    ids=["ValidationFailure", "ReportableRuntimeError"],
+)
+def test_non_shape_pyshacl_errors_not_blamed_on_extra_shacl(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Only shape/constraint loading errors are reported as invalid shapes."""
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(pyshacl, "validate", fail)
+    with pytest.raises(type(error)) as exc:
+        check_graph(rdflib.Graph(), rdflib.Graph(), SPDX_VERSIONS[-1], True)
+    assert not isinstance(exc.value, spdx3_validate.SpdxValidateError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pyshacl.errors.ShapeLoadError("boom", "x"),
+        pyshacl.errors.ConstraintLoadError("boom", "x"),
+    ],
+    ids=["ShapeLoadError", "ConstraintLoadError"],
+)
+def test_shape_load_errors_reported(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Shape and constraint loading errors become ShaclShapesError."""
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(pyshacl, "validate", fail)
+    with pytest.raises(spdx3_validate.ShaclShapesError):
+        check_graph(rdflib.Graph(), rdflib.Graph(), SPDX_VERSIONS[-1], True)
