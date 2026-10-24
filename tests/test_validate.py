@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import spdx3_validate
+from spdx3_validate.spdx_versions import find_version
 
 DATA_DIR = Path(__file__).parent / "data"
 VALID_DOC = DATA_DIR / "3.0.1" / "valid" / "package_sbom.json"
@@ -112,3 +113,12 @@ def test_spdx3validate_invalid() -> None:
     except OSError as e:
         pytest.skip(f"network unavailable: {e}")
     assert rc != 0
+
+
+def test_version_from_context_array() -> None:
+    """An @context array is matched by its first item (no network)."""
+    url = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+    version = find_version([url, {"ex": "https://example.org/"}])
+    assert version is not None and version.context_url == url
+    assert find_version([{"ex": "https://example.org/"}, url]) is None
+    assert find_version([]) is None

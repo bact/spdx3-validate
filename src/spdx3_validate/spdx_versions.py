@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterator, NamedTuple, Optional
+from typing import Any, Callable, Iterator, List, NamedTuple, Optional, Union
 
 from rdflib import RDF, Graph, URIRef
 from rdflib.term import Node
@@ -58,7 +58,16 @@ SPDX_VERSIONS = (
 )
 
 
-def find_version(context_url: str) -> Optional[SpdxVersion]:
+def find_version(context: Union[str, List[Any]]) -> Optional[SpdxVersion]:
+    """Find the SPDX version of an ``@context``.
+
+    An array is matched by its first item, so that contexts for extensions
+    can follow the SPDX context.
+    """
+    first = context[0] if isinstance(context, list) and context else context
+    if not isinstance(first, str):
+        return None
+    context_url = first
     for s in SPDX_VERSIONS:
         if s.context_url == context_url:
             return s
