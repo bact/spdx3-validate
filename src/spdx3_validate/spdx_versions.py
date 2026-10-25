@@ -62,9 +62,15 @@ def find_version(context: Union[str, List[Any]]) -> Optional[SpdxVersion]:
     """Find the SPDX version of an ``@context``.
 
     An array is matched by its first item, so that contexts for extensions
-    can follow the SPDX context.
+    can follow the SPDX context. Those must be inline objects: a URL would be
+    fetched or read from disk while parsing the document.
     """
-    first = context[0] if isinstance(context, list) and context else context
+    if isinstance(context, list):
+        if not context or not all(isinstance(c, dict) for c in context[1:]):
+            return None
+        first = context[0]
+    else:
+        first = context
     if not isinstance(first, str):
         return None
     context_url = first

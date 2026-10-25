@@ -122,3 +122,14 @@ def test_version_from_context_array() -> None:
     assert version is not None and version.context_url == url
     assert find_version([{"ex": "https://example.org/"}, url]) is None
     assert find_version([]) is None
+
+
+def test_context_array_rejects_more_urls() -> None:
+    """Items after the SPDX context must be inline objects, never URLs.
+
+    A URL would be fetched or read from disk while parsing the document.
+    """
+    url = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+    assert find_version([url, "https://example.org/ctx.jsonld"]) is None
+    assert find_version([url, "file:///etc/hosts"]) is None
+    assert find_version([url, {"ex": "https://example.org/"}, "ctx.jsonld"]) is None
