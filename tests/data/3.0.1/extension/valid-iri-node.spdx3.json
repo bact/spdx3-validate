@@ -49,7 +49,7 @@
           "type": "https://example.org/spdx3-ext/synthetic-data/SyntheticDataExtension",
           "@id": "https://example.org/spdx/ext/instruct-mix-synthetic",
           "https://example.org/spdx3-ext/synthetic-data/generationMethod": {
-            "@id": "https://example.org/spdx3-ext/synthetic-data/DataGenerationMethodType/machineGenerated"
+            "@id": "https://example.org/spdx3-ext/synthetic-data/DataGenerationMethod/machineGenerated"
           }
         }
       ]
